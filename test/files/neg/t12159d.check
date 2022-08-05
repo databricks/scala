@@ -1,0 +1,7 @@
+t.scala:7: warning: match may not be exhaustive.
+It would fail on the following input: W()
+    x match {
+    ^
+error: No warnings can be incurred under -Xfatal-warnings.
+one warning found
+one error found
