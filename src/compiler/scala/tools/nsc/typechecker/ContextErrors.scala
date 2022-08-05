@@ -782,7 +782,7 @@ trait ContextErrors {
 
       // def stabilize
       def NotAValueError(tree: Tree, sym: Symbol) = {
-        issueNormalTypeError(tree, sym.kindString + " " + sym.fullName + " is not a value")
+        issueNormalTypeError(tree, s"${sym.kindString} ${sym.fullName} is not a value")
         setError(tree)
       }
 

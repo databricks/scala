@@ -890,6 +890,17 @@ abstract class ClassfileParser(reader: ReusableInstance[ReusableDataReader]) {
           }
           in.skip(attrLen)
 
+        case tpnme.PermittedSubclassesATTR =>
+          sym.setFlag(SEALED)
+          val numberOfClasses = u2()
+          for (n <- 0 until numberOfClasses) {
+            val k = pool.getClassSymbol(u2())
+            completer match {
+              case ctc: ClassTypeCompleter => ctc.permittedSubclasses ::= k   // sym.addChild(k)
+              case _ =>
+            }
+          }
+
         case _ =>
           in.skip(attrLen)
       }
@@ -1263,6 +1274,7 @@ abstract class ClassfileParser(reader: ReusableInstance[ReusableDataReader]) {
     var exceptions: List[NameOrString] = Nil
   }
   private final class ClassTypeCompleter(name: Name, jflags: JavaAccFlags, parent: NameOrString, ifaces: List[NameOrString]) extends JavaTypeCompleter {
+    var permittedSubclasses: List[symbolTable.Symbol] = Nil
     override def complete(sym: symbolTable.Symbol): Unit = {
       val info = if (sig != null) sigToType(sym, sig) else {
         val superType =
@@ -1274,6 +1286,9 @@ abstract class ClassfileParser(reader: ReusableInstance[ReusableDataReader]) {
         ClassInfoType(superType :: ifacesTypes, instanceScope, clazz)
       }
       sym.setInfo(info)
+      for (k <- permittedSubclasses)
+        if (k.parentSymbols.contains(sym))
+          sym.addChild(k)
     }
   }
 
