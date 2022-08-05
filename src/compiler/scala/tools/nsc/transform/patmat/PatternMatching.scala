@@ -12,6 +12,8 @@
 
 package scala.tools.nsc.transform.patmat
 
+import scala.annotation.tailrec
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.tools.nsc.Global
 import scala.tools.nsc.ast
@@ -19,7 +21,7 @@ import scala.language.postfixOps
 import scala.tools.nsc.Reporting.WarningCategory
 import scala.tools.nsc.transform.TypingTransformers
 import scala.tools.nsc.transform.Transform
-import scala.reflect.internal.util.Statistics
+import scala.reflect.internal.util.{SourceFile, Statistics}
 import scala.reflect.internal.{Mode, Types}
 import scala.reflect.internal.util.Position
 
@@ -59,6 +61,9 @@ trait PatternMatching extends Transform
   import global._
 
   val phaseName: String = "patmat"
+
+  /** Symbols to force for determining children of sealed Java classes. */
+  val javaClassesByUnit = perRunCaches.newMap[SourceFile, mutable.Set[Symbol]]()
 
   def newTransformer(unit: CompilationUnit): Transformer = new MatchTransformer(unit)
 

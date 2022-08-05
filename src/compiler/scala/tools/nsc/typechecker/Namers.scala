@@ -803,6 +803,8 @@ trait Namers extends MethodSynthesis {
       tree.symbol = enterClassSymbol(tree)
       tree.symbol setInfo completerOf(tree)
 
+      if (tree.symbol.isJava) patmat.javaClassesByUnit.get(tree.symbol.pos.source).foreach(_.add(tree.symbol))
+
       if (mods.isCase) {
         val m = ensureCompanionObject(tree, caseModuleDef)
         m.moduleClass.updateAttachment(new ClassForCaseCompanionAttachment(tree))
