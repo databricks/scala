@@ -133,4 +133,8 @@ trait StdAttachments {
   case class ChangeOwnerAttachment(originalOwner: Symbol)
 
   case class LookupAmbiguityWarning(msg: String) extends PlainAttachment
+
+  /** Java sealed classes may be qualified with a permits clause specifying allowed subclasses. */
+  case class PermittedSubclasses(permits: List[Tree]) extends PlainAttachment
+  case class PermittedSubclassSymbols(permits: List[Symbol]) extends PlainAttachment
 }

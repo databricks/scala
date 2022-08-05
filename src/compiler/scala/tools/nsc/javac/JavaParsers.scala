@@ -19,6 +19,7 @@ package javac
 import scala.collection.mutable.ListBuffer
 import symtab.Flags
 import JavaTokens._
+import scala.annotation.tailrec
 import scala.language.implicitConversions
 import scala.reflect.internal.util.Position
 import scala.reflect.internal.util.ListOfNil
@@ -64,7 +65,7 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
 
     private var lastErrorPos : Int = -1
 
-    protected def skip() {
+    protected def skip(): Unit = {
       var nparens = 0
       var nbraces = 0
       while (true) {
@@ -90,11 +91,11 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
 
     def warning(pos : Int, msg : String) : Unit
     def syntaxError(pos: Int, msg: String) : Unit
-    def syntaxError(msg: String, skipIt: Boolean) {
+    def syntaxError(msg: String, skipIt: Boolean): Unit = {
       syntaxError(in.currentPos, msg, skipIt)
     }
 
-    def syntaxError(pos: Int, msg: String, skipIt: Boolean) {
+    def syntaxError(pos: Int, msg: String, skipIt: Boolean): Unit = {
       if (pos > lastErrorPos) {
         syntaxError(pos, msg)
         // no more errors on this token.
@@ -149,7 +150,7 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
     // ------------- general parsing ---------------------------
 
     /** skip parent or brace enclosed sequence of things */
-    def skipAhead() {
+    def skipAhead(): Unit = {
       var nparens = 0
       var nbraces = 0
       do {
@@ -171,7 +172,7 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
       } while (in.token != EOF && (nparens > 0 || nbraces > 0))
     }
 
-    def skipTo(tokens: Int*) {
+    def skipTo(tokens: Int*): Unit = {
       while (!(tokens contains in.token) && in.token != EOF) {
         if (in.token == LBRACE) { skipAhead(); accept(RBRACE) }
         else if (in.token == LPAREN) { skipAhead(); accept(RPAREN) }
@@ -196,7 +197,7 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
       pos
     }
 
-    def acceptClosingAngle() {
+    def acceptClosingAngle(): Unit = {
       val closers: PartialFunction[Int, Int] = {
         case GTGTGTEQ => GTGTEQ
         case GTGTGT   => GTGT
@@ -262,7 +263,8 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
       t
     }
 
-    def optArrayBrackets(tpt: Tree): Tree =
+    @tailrec
+    final def optArrayBrackets(tpt: Tree): Tree =
       if (in.token == LBRACKET) {
         val tpt1 = atPos(in.pos) { arrayOf(tpt) }
         in.nextToken()
@@ -489,11 +491,39 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
           case SYNCHRONIZED =>
             in.nextToken()
           case _ =>
-            val privateWithin: TypeName =
-              if (isPackageAccess && !inInterface) thisPackageName
-              else tpnme.EMPTY
-
-            return Modifiers(flags, privateWithin) withAnnotations annots
+            val unsealed = 0L   // no flag for UNSEALED
+            def consume(added: FlagSet): Boolean = { in.nextToken(); /*flags |= added;*/ false }
+            def lookingAhead(s: String): Boolean = {
+              import scala.reflect.internal.Chars._
+              var i = 0
+              val n = s.length
+              val lookahead = in.in.lookahead
+              while (i < n && lookahead.ch != SU) {
+                if (lookahead.ch != s.charAt(i)) return false
+                lookahead.next()
+                i += 1
+              }
+              i == n && Character.isWhitespace(lookahead.ch)
+            }
+            val done = (in.token != IDENTIFIER) || (
+              in.name match {
+                case nme.javaRestrictedIdentifiers.SEALED => consume(Flags.SEALED)
+                case nme.javaRestrictedIdentifiers.UNSEALED => consume(unsealed)
+                case nme.javaRestrictedIdentifiers.NON =>
+                  !lookingAhead("-sealed") || {
+                    in.nextToken()
+                    in.nextToken()
+                    consume(unsealed)
+                  }
+                case _ => true
+              }
+            )
+            if (done) {
+              val privateWithin: TypeName =
+                if (isPackageAccess && !inInterface) thisPackageName
+                else tpnme.EMPTY
+              return Modifiers(flags, privateWithin) withAnnotations annots
+            }
         }
       }
       abort("should not be here")
@@ -547,7 +577,7 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
      varDecl(in.currentPos, Modifiers(Flags.JAVA | Flags.PARAM, typeNames.EMPTY, anns), t, ident().toTermName)
     }
 
-    def optThrows() {
+    def optThrows(): Unit = {
       if (in.token == THROWS) {
         in.nextToken()
         repsep(typ, COMMA)
@@ -786,6 +816,13 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
         List()
       }
 
+    def permitsOpt() =
+      if (in.token == IDENTIFIER && in.name == nme.javaRestrictedIdentifiers.PERMITS) {
+        in.nextToken()
+        repsep(() => typ(), COMMA)
+      }
+      else Nil
+
     def classDecl(mods: Modifiers): List[Tree] = {
       accept(CLASS)
       val pos = in.currentPos
@@ -799,9 +836,13 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
           javaLangObject()
         }
       val interfaces = interfacesOpt()
+      val permits = permitsOpt()
       val (statics, body) = typeBody(CLASS, name)
       addCompanionObject(statics, atPos(pos) {
-        ClassDef(mods, name, tparams, makeTemplate(superclass :: interfaces, body))
+        // there's no scala.util.ChaininOps.tap in 2.12, inline
+        val cd = ClassDef(mods, name, tparams, makeTemplate(superclass :: interfaces, body))
+        if (permits.nonEmpty) cd.updateAttachment(PermittedSubclasses(permits))
+        cd
       })
     }
 
@@ -817,11 +858,15 @@ trait JavaParsers extends ast.parser.ParsersCommon with JavaScanners {
         } else {
           List(javaLangObject())
         }
+      val permits = permitsOpt()
       val (statics, body) = typeBody(INTERFACE, name)
       addCompanionObject(statics, atPos(pos) {
-        ClassDef(mods | Flags.TRAIT | Flags.INTERFACE | Flags.ABSTRACT,
-                 name, tparams,
-                 makeTemplate(parents, body))
+        // there's no scala.util.ChaininOps.tap in 2.12, inline
+        val cd = ClassDef(mods | Flags.TRAIT | Flags.INTERFACE | Flags.ABSTRACT,
+           name, tparams,
+           makeTemplate(parents, body))
+        if (permits.nonEmpty) cd.updateAttachment(PermittedSubclasses(permits))
+        cd
       })
     }
 

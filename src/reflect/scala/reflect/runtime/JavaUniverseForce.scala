@@ -69,6 +69,8 @@ trait JavaUniverseForce { self: runtime.JavaUniverse  =>
     this.KnownDirectSubclassesCalled
     this.ChangeOwnerAttachment
     this.LookupAmbiguityWarning
+    this.PermittedSubclasses
+    this.PermittedSubclassSymbols
     this.noPrint
     this.typeDebug
     // inaccessible: this.posAssigner

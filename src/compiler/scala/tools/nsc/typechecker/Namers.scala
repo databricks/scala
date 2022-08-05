@@ -440,6 +440,9 @@ trait Namers extends MethodSynthesis {
             s"Companions '$clazz' and '$module' must be defined in same file:\n"
           + s"  Found in ${clazz.sourceFile.canonicalPath} and ${module.sourceFile.canonicalPath}")
         )
+        if (fails) reporter.error(tree.pos,
+          sm"""|Companions '$clazz' and '$module' must be defined in same file:
+               |  Found in ${clazz.sourceFile.canonicalPath} and ${module.sourceFile.canonicalPath}""")
       }
     }
 
@@ -1152,17 +1155,25 @@ trait Namers extends MethodSynthesis {
       val pending = mutable.ListBuffer[AbsTypeError]()
       parentTrees foreach { tpt =>
         val ptpe = tpt.tpe
-        if (!ptpe.isError) {
+        if (!ptpe.isError && !phase.erasedTypes) {
           val psym = ptpe.typeSymbol
-          val sameSourceFile = context.unit.source.file == psym.sourceFile
-
-          if (psym.isSealed && !phase.erasedTypes)
-            if (sameSourceFile)
-              psym addChild context.owner
+          if (psym.isSealed) {
+            val sameSourceFile = context.unit.source.file == psym.sourceFile
+            val okChild =
+              if (psym.isJava)
+                psym.attachments.get[PermittedSubclassSymbols] match {
+                  case Some(permitted) => permitted.permits.exists(_ == clazz)
+                  case _ => sameSourceFile
+                }
+              else
+                sameSourceFile
+            if (okChild)
+              psym.addChild(clazz)
             else
               pending += ParentSealedInheritanceError(tpt, psym)
-          if (psym.isLocalToBlock && psym.isClass && !phase.erasedTypes)
-            psym addChild context.owner
+          }
+          if (psym.isLocalToBlock && psym.isClass)
+            psym.addChild(clazz)
         }
       }
       pending.foreach(ErrorUtils.issueTypeError)
@@ -1182,13 +1193,12 @@ trait Namers extends MethodSynthesis {
 
       // add apply and unapply methods to companion objects of case classes,
       // unless they exist already; here, "clazz" is the module class
-      if (clazz.isModuleClass) {
+      if (clazz.isModuleClass)
         clazz.attachments.get[ClassForCaseCompanionAttachment] foreach { cma =>
           val cdef = cma.caseClass
           assert(cdef.mods.isCase, "expected case class: "+ cdef)
           addApplyUnapply(cdef, templateNamer)
         }
-      }
 
       // add the copy method to case classes; this needs to be done here, not in SyntheticMethods, because
       // the namer phase must traverse this copy method to create default getters for its parameters.
@@ -1231,6 +1241,11 @@ trait Namers extends MethodSynthesis {
 
       val res = GenPolyType(tparams0, resultType)
       val pluginsTp = pluginsTypeSig(res, typer, cdef, WildcardType)
+      cdef.getAndRemoveAttachment[PermittedSubclasses].foreach { permitted =>
+        clazz.updateAttachment[PermittedSubclassSymbols] {
+          PermittedSubclassSymbols(permitted.permits.map(typer.typed(_, Mode.NOmode).symbol))
+        }
+      }
 
       // Already assign the type to the class symbol (monoTypeCompleter will do it again).
       // Allows isDerivedValueClass to look at the info.

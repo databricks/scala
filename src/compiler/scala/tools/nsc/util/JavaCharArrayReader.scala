@@ -75,4 +75,11 @@ class JavaCharArrayReader(buf: IndexedSeq[Char], start: Int, /* startline: int, 
 
   def copy: JavaCharArrayReader =
     new JavaCharArrayReader(buf, bp, /* nextcol, nextline, */ decodeUni, error)
+
+  // a copy of this reader that is primed to read starting at the current character.
+  def lookahead: JavaCharArrayReader = {
+    val reader = new JavaCharArrayReader(buf, bp-1, /* nextcol, nextline, */ decodeUni, error)
+    reader.next()
+    reader
+  }
 }
