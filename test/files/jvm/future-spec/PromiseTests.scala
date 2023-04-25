@@ -7,6 +7,7 @@ import scala.concurrent.duration.Duration.Inf
 import scala.collection._
 import scala.runtime.NonLocalReturnControl
 import scala.util.{Try,Success,Failure}
+import scala.util.control.ControlThrowable
 
 
 class PromiseTests extends MinimalScalaTest {
@@ -122,6 +123,18 @@ class PromiseTests extends MinimalScalaTest {
   "An interrupted Promise" should {
     val message = "Boxed InterruptedException"
     val future = Promise[String]().complete(Failure(new InterruptedException(message))).future
+    futureWithException[ExecutionException](_(future, message))
+  }
+
+  "Error" should {
+    val message = "Boxed Error"
+    val future = Promise[String]().complete(Failure(new StackOverflowError)).future
+    futureWithException[ExecutionException](_(future, message))
+  }
+
+  "ControlThrowable" should {
+    val message = "Boxed ControlThrowable"
+    val future = Promise[String]().complete(Failure(new ControlThrowable {})).future
     futureWithException[ExecutionException](_(future, message))
   }
 
