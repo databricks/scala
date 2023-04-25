@@ -91,13 +91,12 @@ private[concurrent] object Promise {
   private[this] final def resolve[T](value: Try[T]): Try[T] =
     if (requireNonNull(value).isInstanceOf[Success[T]]) value
     else {
-      val t = value.asInstanceOf[Failure[T]].exception
-      if (t.isInstanceOf[ControlThrowable] || t.isInstanceOf[InterruptedException] || t.isInstanceOf[Error]) {
-        if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
-          Success(t.asInstanceOf[NonLocalReturnControl[T]].value)
-        else
-          Failure(new ExecutionException("Boxed Exception", t))
-      } else value
+      value.asInstanceOf[Failure[T]].exception match {
+        case t: OutOfMemoryError => throw t
+        case t: NonLocalReturnControl[T @unchecked] => Success(t.value)
+        case t @ (_: InterruptedException | _: ControlThrowable | _: Error) => Failure(new ExecutionException("Boxed Exception", t))
+        case _ => value
+      }
     }
 
   // Left non-final to enable addition of extra fields by Java/Scala converters in scala-java8-compat.
