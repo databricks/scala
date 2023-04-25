@@ -16,7 +16,7 @@ import scala.concurrent.{ ExecutionContext, CanAwait, OnCompleteRunnable, Timeou
 import scala.concurrent.Future.InternalCallbackExecutor
 import scala.concurrent.duration.{ Duration, FiniteDuration }
 import scala.annotation.tailrec
-import scala.util.control.NonFatal
+import scala.util.control.{ ControlThrowable, NonFatal }
 import scala.util.{ Try, Success, Failure }
 
 import java.util.concurrent.locks.AbstractQueuedSynchronizer
@@ -28,10 +28,12 @@ private[concurrent] trait Promise[T] extends scala.concurrent.Promise[T] with sc
   import scala.concurrent.Future
   import scala.concurrent.impl.Promise.DefaultPromise
 
-  private[this] final def wrapFailure(t: Throwable): Throwable = {
-    if (NonFatal(t)) t
-    else if (t.isInstanceOf[InterruptedException]) new ExecutionException("Boxed InterruptedException", t)
-    else throw t
+  private[this] final def wrapFailure(t: Throwable): Throwable = t match {
+    case t: OutOfMemoryError => throw t
+    case t: InterruptedException => new ExecutionException("Boxed InterruptedException", t)
+    case t: ControlThrowable => new ExecutionException("Boxed ControlThrowable", t)
+    case t: Error => new ExecutionException("Boxed Error", t)
+    case _ => t
   }
 
   override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): Future[S] = {
