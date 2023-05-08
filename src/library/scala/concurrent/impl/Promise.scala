@@ -28,12 +28,17 @@ private[concurrent] trait Promise[T] extends scala.concurrent.Promise[T] with sc
   import scala.concurrent.Future
   import scala.concurrent.impl.Promise.DefaultPromise
 
-  private[this] final def wrapFailure(t: Throwable): Throwable = t match {
-    case t: OutOfMemoryError => throw t
-    case t: InterruptedException => new ExecutionException("Boxed InterruptedException", t)
-    case t: ControlThrowable => new ExecutionException("Boxed ControlThrowable", t)
-    case t: Error => new ExecutionException("Boxed Error", t)
-    case _ => t
+  private[this] final def wrapFailure(t: Throwable): Throwable = {
+    if(Promise.completeAllExceptions) t match {
+      case t: OutOfMemoryError => throw t
+      case t: InterruptedException => new ExecutionException("Boxed InterruptedException", t)
+      case t: ControlThrowable => new ExecutionException("Boxed ControlThrowable", t)
+      case t: Error => new ExecutionException("Boxed Error", t)
+      case _ => t
+    } else t match {
+      case NonFatal(t) => t
+      case _ => throw t
+    }
   }
 
   override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): Future[S] = {
@@ -82,6 +87,7 @@ private final class CallbackRunnable[T](val executor: ExecutionContext, val onCo
 }
 
 private[concurrent] object Promise {
+  private val completeAllExceptions = System.getProperty("databricks.completeAllExceptions", "false") == "true"
 
   private def resolveTry[T](source: Try[T]): Try[T] = source match {
     case Failure(t) => resolver(t)
