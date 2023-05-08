@@ -1,3 +1,5 @@
+// scalac: -deprecation
+
 import scala.concurrent.{
   Future,
   Promise,
@@ -13,8 +15,9 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.duration._
 import scala.reflect.{ classTag, ClassTag }
 import scala.tools.partest.TestUtil.intercept
-import scala.annotation.tailrec
+import scala.annotation.{nowarn, tailrec}
 
+@nowarn("cat=deprecation")
 trait TestBase {
   trait Done { def apply(proof: => Boolean): Unit }
   def once(body: Done => Unit) {
@@ -36,7 +39,7 @@ trait TestBase {
   }
 }
 
-
+@nowarn("cat=deprecation")
 trait FutureCallbacks extends TestBase {
   import ExecutionContext.Implicits._
 
@@ -132,6 +135,7 @@ trait FutureCallbacks extends TestBase {
 }
 
 
+@nowarn("cat=deprecation")
 trait FutureCombinators extends TestBase {
   import ExecutionContext.Implicits._
 
@@ -548,6 +552,7 @@ def testTransformFailure(): Unit = once {
 }
 
 
+@nowarn("cat=deprecation")
 trait FutureProjections extends TestBase {
   import ExecutionContext.Implicits._
 
@@ -729,6 +734,7 @@ trait BlockContexts extends TestBase {
   test("testPopCustom")(testPopCustom())
 }
 
+@nowarn("cat=deprecation")
 trait Promises extends TestBase {
   import ExecutionContext.Implicits._
 
@@ -763,28 +769,15 @@ trait Promises extends TestBase {
 trait Exceptions extends TestBase {
   import java.util.concurrent.Executors
   def interruptHandling(): Unit = {
-    import java.util.concurrent.{ LinkedBlockingQueue, TimeUnit, ThreadPoolExecutor, ThreadFactory }
-    val exe = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue())
-    exe.setThreadFactory(new ThreadFactory {
-      override def newThread(r: Runnable): Thread = {
-        val t = new Thread(r)
-        t.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler {
-          def uncaughtException(t: Thread, e: Throwable): Unit = ()
-        })
-        t
-      }
-    })
-    implicit val e = ExecutionContext.fromExecutorService(exe)
+    implicit val e = ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(1))
     val p = Promise[String]()
     val f = p.future.map(_ => Thread.sleep(2000))
     p.success("foo")
     Thread.sleep(20)
     e.shutdownNow()
 
-    val t =
-      try { Await.ready(f, 2.seconds); null }
-      catch { case e: TimeoutException => e }
-    assert(t.isInstanceOf[TimeoutException])
+    val Failure(ee: ExecutionException) = Await.ready(f, 2.seconds).value.get
+    assert(ee.getCause.isInstanceOf[InterruptedException])
   }
 
   test("interruptHandling")(interruptHandling())
@@ -793,6 +786,7 @@ trait Exceptions extends TestBase {
 trait GlobalExecutionContext extends TestBase {
   import ExecutionContext.Implicits._
   
+  @nowarn("cat=deprecation")  // Thread.getID is deprecated since JDK 19
   def testNameOfGlobalECThreads(): Unit = once {
     done => Future({
         val expectedName = "scala-execution-context-global-"+ Thread.currentThread.getId
@@ -803,6 +797,7 @@ trait GlobalExecutionContext extends TestBase {
   test("testNameOfGlobalECThreads")(testNameOfGlobalECThreads())
 }
 
+@nowarn("cat=deprecation")  // Thread.getID is deprecated since JDK 19
 trait CustomExecutionContext extends TestBase {
   import scala.concurrent.{ ExecutionContext, Awaitable }
 
