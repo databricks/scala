@@ -126,6 +126,8 @@ starting rejectedExecutionException
 finished rejectedExecutionException
 starting testNameOfGlobalECThreads
 finished testNameOfGlobalECThreads
+starting testUncaughtExceptionReporting
+finished testUncaughtExceptionReporting
 starting testOnSuccessCustomEC
 finished testOnSuccessCustomEC
 starting testKeptPromiseCustomEC
