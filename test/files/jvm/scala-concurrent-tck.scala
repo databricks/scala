@@ -852,6 +852,31 @@ class Exceptions extends TestBase {
     assert(ee.getCause.isInstanceOf[InterruptedException])
   }
 
+  def completeAllExceptions(): Unit = {
+    import scala.util.control.ControlThrowable
+    import java.util.concurrent.{ LinkedBlockingQueue, TimeUnit, ThreadPoolExecutor, ThreadFactory }
+    val exe = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue())
+    exe.setThreadFactory(new ThreadFactory {
+      override def newThread(r: Runnable): Thread = {
+        val t = new Thread(r)
+        t.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler {
+          def uncaughtException(t: Thread, e: Throwable): Unit = ()
+        })
+        t
+      }
+    })
+    implicit val e = ExecutionContext.fromExecutorService(exe)
+    val p = Promise[String]()
+    val f = p.future.map(_ => throw new ControlThrowable() {})
+    Thread.sleep(20)
+    e.shutdownNow()
+
+    val t =
+      try { Await.ready(f, 2.seconds); null }
+      catch { case e: TimeoutException => e }
+    assert(t.isInstanceOf[TimeoutException])
+  }
+
   def rejectedExecutionException(): Unit = {
     implicit val e = ExecutionContext.fromExecutor((r: Runnable) => throw new RejectedExecutionException("foo"))
     val p = Promise[String]()
@@ -861,6 +886,7 @@ class Exceptions extends TestBase {
   }
 
   test("interruptHandling")(interruptHandling())
+  test("completeAllExceptions")(completeAllExceptions())
   test("rejectedExecutionException")(rejectedExecutionException())
 }
 

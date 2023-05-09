@@ -120,6 +120,8 @@ starting testPopCustom
 finished testPopCustom
 starting interruptHandling
 finished interruptHandling
+starting completeAllExceptions
+finished completeAllExceptions
 starting rejectedExecutionException
 finished rejectedExecutionException
 starting testNameOfGlobalECThreads
