@@ -1,3 +1,5 @@
+// java: -Dneeds.forked.jvm -Ddatabricks.completeAllExceptions=true
+
 import scala.concurrent.{
   Future,
   Promise,
@@ -9,7 +11,7 @@ import scala.concurrent.{
   Awaitable,
   blocking
 }
-import scala.annotation.tailrec
+import scala.annotation.{nowarn, tailrec}
 import scala.concurrent.duration._
 import scala.reflect.{classTag, ClassTag}
 import scala.tools.testkit.AssertUtil.{Fast, Slow, assertThrows, waitFor, waitForIt}
@@ -866,13 +868,12 @@ class Exceptions extends TestBase {
     implicit val e = ExecutionContext.fromExecutorService(exe)
     val p = Promise[String]()
     val f = p.future.map(_ => throw new ControlThrowable() {})
+    p.success("foo")
     Thread.sleep(20)
-    e.shutdownNow()
-
     val t =
-      try { Await.ready(f, 2.seconds); null }
+      try { Await.ready(f, 2.seconds).value.get.asInstanceOf[Failure[_]].exception }
       catch { case e: TimeoutException => e }
-    assert(t.isInstanceOf[TimeoutException])
+    assert(t.getCause.isInstanceOf[ControlThrowable])
   }
 
   def rejectedExecutionException(): Unit = {
@@ -890,7 +891,8 @@ class Exceptions extends TestBase {
 
 class GlobalExecutionContext extends TestBase {
   import ExecutionContext.Implicits._
-  
+
+  @nowarn("cat=deprecation")  // Thread.getID is deprecated since JDK 19
   def testNameOfGlobalECThreads(): Unit = once {
     done => Future({
         val expectedName = "scala-execution-context-global-"+ Thread.currentThread.getId
@@ -1081,7 +1083,7 @@ class ExecutionContextPrepare extends TestBase {
       delegate.reportFailure(t)
   }
 
-  implicit val ec = new PreparingExecutionContext
+  implicit val ec: ExecutionContext = new PreparingExecutionContext
 
   def testOnComplete(): Unit = once {
     done =>
