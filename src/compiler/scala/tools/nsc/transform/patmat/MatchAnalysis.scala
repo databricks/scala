@@ -147,7 +147,7 @@ trait TreeAndTypeAnalysis extends Debugging {
             def enumerateChildren(sym: Symbol) = {
               sym.sealedChildren.toList
                 .sortBy(_.sealedSortName)
-                .filterNot(x => x.isSealed && x.isAbstractClass && !isPrimitiveValueClass(x))
+                .filterNot(x => x.isSealed && (x.isAbstractClass || x.hasJavaEnumFlag) && !isPrimitiveValueClass(x))
             }
 
             // enumerate only direct subclasses,
@@ -876,7 +876,7 @@ trait MatchAnalysis extends MatchApproximation {
                       case args                            => args
                     }.map(ListExample)
                   case _ if isTupleSymbol(cls)                  => args(brevity = true).map(TupleExample)
-                  case _ if cls.isSealed && cls.isAbstractClass =>
+                  case _ if cls.isSealed && (cls.isAbstractClass || cls.hasJavaEnumFlag) =>
                     // don't report sealed abstract classes, since
                     // 1) they can't be instantiated
                     // 2) we are already reporting any missing subclass (since we know the full domain)
