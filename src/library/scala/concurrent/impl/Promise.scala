@@ -46,6 +46,8 @@ private[impl] final class CompletionLatch[T] extends AbstractQueuedSynchronizer 
 }
 
 private[concurrent] object Promise {
+  private val completeAllExceptions = System.getProperty("databricks.completeAllExceptions", "false") == "true"
+
   /**
    * Link represents a completion dependency between 2 DefaultPromises.
    * As the DefaultPromise referred to by a Link can itself be linked to another promise
@@ -88,9 +90,16 @@ private[concurrent] object Promise {
    * those values which makes sense in the context of Futures.
    **/
   // requireNonNull is paramount to guard against null completions
-  private[this] final def resolve[T](value: Try[T]): Try[T] =
+  private[this] final def resolve[T](value: Try[T]): Try[T] = {
     if (requireNonNull(value).isInstanceOf[Success[T]]) value
-    else {
+    else if(Promise.completeAllExceptions) {
+      value.asInstanceOf[Failure[T]].exception match {
+        case t: OutOfMemoryError => throw t
+        case t: NonLocalReturnControl[T @unchecked] => Success(t.value)
+        case t @ (_: InterruptedException | _: ControlThrowable | _: Error) => Failure(new ExecutionException("Boxed Exception", t))
+        case _ => value
+      }
+    } else {
       val t = value.asInstanceOf[Failure[T]].exception
       if (t.isInstanceOf[ControlThrowable] || t.isInstanceOf[InterruptedException] || t.isInstanceOf[Error]) {
         if (t.isInstanceOf[NonLocalReturnControl[T @unchecked]])
@@ -99,6 +108,7 @@ private[concurrent] object Promise {
           Failure(new ExecutionException("Boxed Exception", t))
       } else value
     }
+  }
 
   // Left non-final to enable addition of extra fields by Java/Scala converters in scala-java8-compat.
   class DefaultPromise[T] private[this] (initial: AnyRef) extends AtomicReference[AnyRef](initial) with scala.concurrent.Promise[T] with scala.concurrent.Future[T] with (Try[T] => Unit) {
@@ -440,7 +450,11 @@ private[concurrent] object Promise {
 
     private[this] final def handleFailure(t: Throwable, e: ExecutionContext): Unit = {
       val wasInterrupted = t.isInstanceOf[InterruptedException]
-      if (wasInterrupted || NonFatal(t)) {
+      val shouldComplete =
+        if(Promise.completeAllExceptions) !t.isInstanceOf[OutOfMemoryError]
+        else NonFatal(t)
+
+      if (wasInterrupted || shouldComplete) {
         val completed = tryComplete0(get(), resolve(Failure(t)))
         if (completed && wasInterrupted) Thread.currentThread.interrupt()
 
