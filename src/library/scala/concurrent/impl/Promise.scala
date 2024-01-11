@@ -16,7 +16,7 @@ import scala.concurrent.{ ExecutionContext, CanAwait, OnCompleteRunnable, Timeou
 import scala.concurrent.Future.InternalCallbackExecutor
 import scala.concurrent.duration.{ Duration, FiniteDuration }
 import scala.annotation.tailrec
-import scala.util.control.NonFatal
+import scala.util.control.{ ControlThrowable, NonFatal }
 import scala.util.{ Try, Success, Failure }
 
 import java.util.concurrent.locks.AbstractQueuedSynchronizer
@@ -28,9 +28,22 @@ private[concurrent] trait Promise[T] extends scala.concurrent.Promise[T] with sc
   import scala.concurrent.Future
   import scala.concurrent.impl.Promise.DefaultPromise
 
+  private[this] final def wrapFailure(t: Throwable): Throwable = {
+    if(Promise.completeAllExceptions) t match {
+      case t: OutOfMemoryError => throw t
+      case t: InterruptedException => new ExecutionException("Boxed InterruptedException", t)
+      case t: ControlThrowable => new ExecutionException("Boxed ControlThrowable", t)
+      case t: Error => new ExecutionException("Boxed Error", t)
+      case _ => t
+    } else t match {
+      case NonFatal(t) => t
+      case _ => throw t
+    }
+  }
+
   override def transform[S](f: Try[T] => Try[S])(implicit executor: ExecutionContext): Future[S] = {
     val p = new DefaultPromise[S]()
-    onComplete { result => p.complete(try f(result) catch { case NonFatal(t) => Failure(t) }) }
+    onComplete { result => p.complete(try f(result) catch { case t: Throwable => Failure(wrapFailure(t)) }) }
     p.future
   }
 
@@ -42,7 +55,7 @@ private[concurrent] trait Promise[T] extends scala.concurrent.Promise[T] with sc
         case fut if fut eq this => p complete v.asInstanceOf[Try[S]]
         case dp: DefaultPromise[_] => dp.asInstanceOf[DefaultPromise[S]].linkRootOf(p)
         case fut => p completeWith fut
-      } catch { case NonFatal(t) => p failure t }
+      } catch { case t: Throwable => p.failure(wrapFailure(t)) }
     }
     p.future
   }
@@ -74,6 +87,7 @@ private final class CallbackRunnable[T](val executor: ExecutionContext, val onCo
 }
 
 private[concurrent] object Promise {
+  private val completeAllExceptions = System.getProperty("databricks.completeAllExceptions", "false") == "true"
 
   private def resolveTry[T](source: Try[T]): Try[T] = source match {
     case Failure(t) => resolver(t)

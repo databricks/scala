@@ -4,6 +4,7 @@ import scala.concurrent.duration.Duration.Inf
 import scala.collection._
 import scala.runtime.NonLocalReturnControl
 import scala.util.{Try,Success,Failure}
+import scala.util.control.ControlThrowable
 
 @annotation.nowarn("cat=deprecation")
 class PromiseTests extends MinimalScalaTest {
@@ -122,6 +123,18 @@ class PromiseTests extends MinimalScalaTest {
     futureWithException[ExecutionException](_(future, message))
   }
 
+  "Error" should {
+    val message = "Boxed Error"
+    val future = Promise[String]().complete(Failure(new StackOverflowError)).future
+    futureWithException[ExecutionException](_(future, message))
+  }
+
+  "ControlThrowable" should {
+    val message = "Boxed ControlThrowable"
+    val future = Promise[String]().complete(Failure(new ControlThrowable {})).future
+    futureWithException[ExecutionException](_(future, message))
+  }
+
   "A NonLocalReturnControl failed Promise" should {
     val result = "test value"
     val future = Promise[String]().complete(Failure(new NonLocalReturnControl[String]("test", result))).future
@@ -146,7 +159,7 @@ class PromiseTests extends MinimalScalaTest {
         Await.result((future filter (_ => true)), defaultTimeout) mustBe (result)
         intercept[NoSuchElementException] {
           Await.result((future filter (_ => false)), defaultTimeout)
-        }
+        }.getMessage mustBe ("Future.filter predicate is not satisfied")
       }
     }
 
