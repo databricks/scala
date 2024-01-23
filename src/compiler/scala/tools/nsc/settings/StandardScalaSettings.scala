@@ -63,6 +63,8 @@ trait StandardScalaSettings { _: MutableSettings =>
       if (!isJavaAtLeast("9") && current > 8) errorFn.apply("-release is only supported on JVM 9 and higher")
       if (target.valueSetByUser.map(_.toInt > current).getOrElse(false)) errorFn("-release cannot be less than -target")
     }
+    .withAbbreviation("--release")
+    .withAbbreviation("-java-output-version")
   def releaseValue: Option[String] = release.valueSetByUser
   val target =
     ChoiceSetting("-target", "target", "Target platform for object files. All JVM 1.5 - 1.7 targets are deprecated.", AllTargetVersions, DefaultTargetVersion)
