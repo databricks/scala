@@ -1273,7 +1273,7 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
       checkPhaseSettings(including = false, exclusions map (_.value): _*)
 
       // Report the overhead of statistics measurements per every run
-      if (settings.areStatisticsEnabled)
+      if (settings.areStatisticsEnabled && settings.Ystatistics.value.nonEmpty)
         statistics.reportStatisticsOverhead(reporter)
 
       phase = first   //parserPhase
@@ -1576,7 +1576,7 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
       }
       symSource.keys foreach (x => resetPackageClass(x.owner))
 
-      if (timePhases) {
+      if (timePhases && settings.Ystatistics.value.nonEmpty) {
         statistics.stopTimer(totalCompileTime, startTotal)
         informTime("total", totalCompileTime.nanos)
         inform("*** Cumulative timers for phases")
