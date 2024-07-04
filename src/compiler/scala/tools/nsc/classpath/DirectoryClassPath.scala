@@ -14,6 +14,7 @@ package scala.tools.nsc.classpath
 
 import java.io.{Closeable, File}
 import java.net.{URI, URL}
+import java.util.Collections
 
 import scala.reflect.io.{AbstractFile, PlainFile, PlainNioFile}
 import scala.tools.nsc.util.{ClassPath, ClassRepresentation, EfficientClassPath}
@@ -130,9 +131,9 @@ trait JFileDirectoryLookup[FileEntryType <: ClassRepresentation] extends Directo
 
 object JrtClassPath {
   import java.nio.file._, java.net.URI
-  private val jrtClassPathCache = new FileBasedCache[Unit, JrtClassPath]()
+  private val jrtClassPathCache = new FileBasedCache[Option[String], JrtClassPath]()
   private val ctSymClassPathCache = new FileBasedCache[String, CtSymClassPath]()
-  def apply(release: Option[String], closeableRegistry: CloseableRegistry): Option[ClassPath] = {
+  def apply(release: Option[String], systemPath: Option[String], closeableRegistry: CloseableRegistry): Option[ClassPath] = {
     import scala.util.Properties._
     if (!isJavaAtLeast("9")) None
     else {
@@ -158,8 +159,13 @@ object JrtClassPath {
           }
         case _ =>
           try {
-            val fs = FileSystems.getFileSystem(URI.create("jrt:/"))
-            val classPath = jrtClassPathCache.getOrCreate((), Nil, () => new JrtClassPath(fs), closeableRegistry, false)
+            val classPath = jrtClassPathCache.getOrCreate(systemPath, Nil, () => {
+              val fs = systemPath match {
+                case Some(javaHome) => FileSystems.newFileSystem(URI.create("jrt:/"), Collections.singletonMap("java.home", javaHome))
+                case None => FileSystems.getFileSystem(URI.create("jrt:/"))
+              }
+              new JrtClassPath(fs, systemPath.isDefined)
+            }, closeableRegistry, false)
             Some(classPath)
           } catch {
             case _: ProviderNotFoundException | _: FileSystemNotFoundException => None
@@ -177,7 +183,7 @@ object JrtClassPath {
   *
   * The implementation assumes that no classes exist in the empty package.
   */
-final class JrtClassPath(fs: java.nio.file.FileSystem) extends ClassPath with NoSourcePaths {
+final class JrtClassPath(fs: java.nio.file.FileSystem, closeFS: Boolean) extends ClassPath with NoSourcePaths with Closeable {
   import java.nio.file.Path, java.nio.file._
   type F = Path
   private val dir: Path = fs.getPath("/packages")
@@ -224,6 +230,9 @@ final class JrtClassPath(fs: java.nio.file.FileSystem) extends ClassPath with No
       }.take(1).toList.headOption
     }
   }
+
+  def close(): Unit =
+    if(closeFS) fs.close()
 }
 
 /**

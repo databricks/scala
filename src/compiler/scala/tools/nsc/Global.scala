@@ -146,7 +146,7 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
   def optimizerClassPath(base: ClassPath): ClassPath =
     base match {
       case AggregateClassPath(entries) if entries.head.isInstanceOf[CtSymClassPath] =>
-        JrtClassPath(release = None, closeableRegistry)
+        JrtClassPath(release = None, settings.systemPathValue, closeableRegistry)
           .map(jrt => AggregateClassPath(entries.drop(1).prepended(jrt)))
           .getOrElse(base)
       case _ => base

@@ -269,7 +269,7 @@ final class PathResolver(settings: Settings, closeableRegistry: CloseableRegistr
       sourcesInPath(sourcePath)                     // 7. The Scala source path.
     )
 
-    private def jrt: Option[ClassPath] = JrtClassPath.apply(settings.releaseValue, closeableRegistry)
+    private def jrt: Option[ClassPath] = JrtClassPath.apply(settings.releaseValue, settings.systemPathValue, closeableRegistry)
 
     lazy val containers = basis.flatten.distinct
 
