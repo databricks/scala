@@ -139,7 +139,7 @@ trait ImportTracking { self: Analyzer =>
                   if (n > 1 && i == n - 1) {
                     val prev = existing.lastIndexWhere(!deleting.contains(_))
                     val prevPos = existing(prev).tree.pos
-                    val commaPos = prevPos.withStart(prevPos.end).withEnd(existing(prev + 1).tree.pos.start)
+                    val commaPos = prevPos.copyRange(start = prevPos.end, end = existing(prev + 1).tree.pos.start)
                     delete(commaPos) ++ delete(editPos)
                   }
                   else delete(editPos)
@@ -167,15 +167,15 @@ trait ImportTracking { self: Analyzer =>
                   toEmit.foreach { case culled @ (selector, (_, _, _)) =>
                     if (selector != last) {
                       val index = selectors.indexWhere(_ == selector)
-                      val editPos = infoPos.withStart(selector.namePos).withEnd(selectors(index + 1).namePos)
+                      val editPos = infoPos.copyRange(start = selector.namePos, end = selectors(index + 1).namePos)
                       emit(culled, delete(editPos))
                     }
                     else {
                       // info.tree.pos.end is one char after rbrace
                       val prev = selectors.lastIndexWhere(remaining.contains(_))
                       val comma = content.indexWhere(_ == ',', from = selectors(prev).namePos)
-                      val commaPos = infoPos.withStart(comma).withEnd(selectors(prev + 1).namePos)
-                      val editPos = infoPos.withStart(selector.namePos).withEnd(info.tree.pos.end - 1)
+                      val commaPos = infoPos.copyRange(start = comma, end = selectors(prev + 1).namePos)
+                      val editPos = infoPos.copyRange(start = selector.namePos, end = info.tree.pos.end - 1)
                       emit(culled, delete(commaPos) ++ delete(editPos))
                     }
                   }

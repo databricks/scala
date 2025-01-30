@@ -421,7 +421,7 @@ trait DocComments { self: Global =>
       else {
         val start1 = pos.start + start
         val end1 = pos.start + end
-        pos withStart start1 withPoint start1 withEnd end1
+        pos.copyRange(start1, start1, end1)
       }
 
     def defineVariables(sym: Symbol) = {
