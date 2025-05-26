@@ -71,6 +71,7 @@ abstract class MutableSettings extends AbsSettings {
   // TODO: Add these fields typed as `BooleanSetting` for 2.13.x
   def YhotStatisticsEnabled: Boolean = false
   def YstatisticsEnabled: Boolean = false
+  def YcompilationUnitStatistics: BooleanSetting
 
   def Yrecursion: IntSetting
   def maxClassfileName: IntSetting
@@ -90,5 +91,6 @@ object MutableSettings {
     @inline final def areHotStatisticsEnabled = (StatisticsStatics.HOT_STATS_GETTER.invokeExact(): Boolean) && settings.YhotStatisticsEnabled
     @inline final def isDebug: Boolean     = (StatisticsStatics.DEBUG_GETTER.invokeExact(): Boolean) && settings.debug
     @inline final def isDeveloper: Boolean = (StatisticsStatics.DEVELOPER_GETTER.invokeExact(): Boolean) && settings.developer
+    @inline final def areCompilationUnitStatisticsEnabled = (StatisticsStatics.COMPILATION_UNIT_STATS_GETTER.invokeExact(): Boolean) && settings.YcompilationUnitStatistics.value
   }
 }

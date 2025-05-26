@@ -1151,6 +1151,26 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
     /** The currently compiled unit; set from GlobalPhase */
     var currentUnit: CompilationUnit = NoCompilationUnit
 
+    /** The current source file associated with type-checking; set in Analyzer (for Typers) and in
+     *  type completers via `measureTyperTime` */
+    private[this] var currentTypecheckingUnit: CompilationUnit = NoCompilationUnit
+
+    @inline def measureTyperTime[T](@inline unit: CompilationUnit)(@inline f: => T): T = {
+      if(settings.areCompilationUnitStatisticsEnabled) {
+        val t0 = System.nanoTime()
+        val prevTypecheckingUnit = currentTypecheckingUnit
+        try {
+          currentTypecheckingUnit = unit
+          f
+        } finally {
+          val td = System.nanoTime() - t0
+          currentTypecheckingUnit = prevTypecheckingUnit
+          prevTypecheckingUnit.accumulatedTyperTime -= td
+          unit.accumulatedTyperTime += td
+        }
+      } else f
+    }
+
     val profiler: Profiler = Profiler(settings)
     keepPhaseStack = settings.log.isSetByUser
 
@@ -1594,6 +1614,14 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
         inform("*** Cumulative timers for phases")
         for (q <- statistics.allQuantities if q.phases == List(GlobalPhaseName))
           inform(q.line)
+      }
+
+      if (settings.YshowCompilationUnitStatistics.value) {
+        inform("*** Typer times per compilation unit")
+        units.sortBy(- _.accumulatedTyperTime)foreach { u =>
+          inform(s"  ${u.source.path}: ${u.accumulatedTyperTime/1000000} ms")
+        }
+        inform(s"  Total: ${units.iterator.map(_.accumulatedTyperTime).sum/1000000} ms")
       }
 
       // Clear any sets or maps created via perRunCaches.
