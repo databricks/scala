@@ -459,6 +459,9 @@ trait ScalaSettings extends StandardScalaSettings with Warnings { _: MutableSett
     str => Some(if(str.equalsIgnoreCase("off")) Int.MaxValue else str.toInt))
   val Yquasiquotedebug        = BooleanSetting("-Yquasiquote-debug", "Trace quasiquote-related activities.")
 
+  val YcompilationUnitStatistics = BooleanSetting("-Ycompilation-unit-statistics", "Collect compilation unit statistics.").withPostSetHook(s => if (s.value) StatisticsStatics.enableCompilationUnitStatsAndDeoptimize())
+  val YshowCompilationUnitStatistics = BooleanSetting("-Yshow-compilation-unit-statistics", "Print compilation unit statistics.").withPostSetHook(_ => YcompilationUnitStatistics.value = true)
+
   /** Groups of Settings.
    */
   val future        = BooleanSetting("-Xfuture", "Turn on future language features.") enablingIfNotSetByUser futureSettings

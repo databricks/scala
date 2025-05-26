@@ -863,7 +863,7 @@ trait Namers extends MethodSynthesis {
 
     def monoTypeCompleter(tree: MemberDef) = new MonoTypeCompleter(tree)
     class MonoTypeCompleter(tree: MemberDef) extends TypeCompleterBase(tree) {
-      override def completeImpl(sym: Symbol): Unit = {
+      override def completeImpl(sym: Symbol): Unit = currentRun.measureTyperTime(context.unit) {
         // this early test is there to avoid infinite baseTypes when
         // adding setters and getters --> bug798
         // It is a def in an attempt to provide some insulation against
@@ -900,7 +900,7 @@ trait Namers extends MethodSynthesis {
 
     def moduleClassTypeCompleter(tree: ModuleDef) = new ModuleClassTypeCompleter(tree)
     class ModuleClassTypeCompleter(tree: ModuleDef) extends TypeCompleterBase(tree) {
-      override def completeImpl(sym: Symbol): Unit = {
+      override def completeImpl(sym: Symbol): Unit = currentRun.measureTyperTime(context.unit) {
         val moduleSymbol = tree.symbol
         assert(moduleSymbol.moduleClass == sym, moduleSymbol.moduleClass)
         moduleSymbol.info // sets moduleClass info as a side effect.
@@ -909,7 +909,7 @@ trait Namers extends MethodSynthesis {
 
     def importTypeCompleter(tree: Import) = new ImportTypeCompleter(tree)
     class ImportTypeCompleter(imp: Import) extends TypeCompleterBase(imp) {
-      override def completeImpl(sym: Symbol): Unit = {
+      override def completeImpl(sym: Symbol): Unit = currentRun.measureTyperTime(context.unit) {
         sym setInfo importSig(imp)
       }
     }
@@ -930,7 +930,7 @@ trait Namers extends MethodSynthesis {
     // as specified by Field.noFieldFor)
     def valTypeCompleter(tree: ValDef) = new ValTypeCompleter(tree)
     class ValTypeCompleter(tree: ValDef) extends TypeCompleterBase(tree) {
-      override def completeImpl(fieldOrGetterSym: Symbol): Unit = {
+      override def completeImpl(fieldOrGetterSym: Symbol): Unit = currentRun.measureTyperTime(context.unit) {
         val mods = tree.mods
         val isGetter = fieldOrGetterSym.isMethod
         val annots =
@@ -953,7 +953,7 @@ trait Namers extends MethodSynthesis {
     // knowing `isBean`, we could derive `isSetter` from `valDef.name`
     def accessorTypeCompleter(valDef: ValDef, missingTpt: Boolean, isBean: Boolean, isSetter: Boolean) = new AccessorTypeCompleter(valDef, missingTpt, isBean, isSetter)
     class AccessorTypeCompleter(valDef: ValDef, missingTpt: Boolean, isBean: Boolean, isSetter: Boolean) extends TypeCompleterBase(valDef) {
-      override def completeImpl(accessorSym: Symbol): Unit = {
+      override def completeImpl(accessorSym: Symbol): Unit = currentRun.measureTyperTime(context.unit) {
         context.unit.synthetics get accessorSym match {
           case Some(ddef: DefDef) =>
             // `accessorSym` is the accessor for which we're completing the info (tree == ddef),
@@ -1053,7 +1053,7 @@ trait Namers extends MethodSynthesis {
 
     def selfTypeCompleter(tree: Tree) = new SelfTypeCompleter(tree)
     class SelfTypeCompleter(tree: Tree) extends TypeCompleterBase(tree) {
-      override def completeImpl(sym: Symbol): Unit = {
+      override def completeImpl(sym: Symbol): Unit = currentRun.measureTyperTime(context.unit) {
         val selftpe = typer.typedType(tree).tpe
         sym setInfo {
           if (selftpe.typeSymbol isNonBottomSubClass sym.owner) selftpe
@@ -2107,7 +2107,7 @@ trait Namers extends MethodSynthesis {
       foreach2(tparams, skolems)(_ setSymbol _)
     }
 
-    def completeImpl(sym: Symbol) = {
+    def completeImpl(sym: Symbol) = currentRun.measureTyperTime(ctx.unit) {
       // @M an abstract type's type parameters are entered.
       // TODO: change to isTypeMember ?
       if (defnSym.isAbstractType)
