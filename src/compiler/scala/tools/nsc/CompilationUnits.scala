@@ -50,6 +50,11 @@ trait CompilationUnits { global: Global =>
     def sourceAt(pos: Position): String =
       if (pos.start < pos.end) new String(source.content.slice(pos.start, pos.end)) else ""
 
+    /** Time spent type-checking this unit in ns. Only used when -Ycompilation-unit-statistics is enabled.
+     *  We store it here to avoid a map lookup every time it is modified (which can be very often because
+     *  type-checking is done in type completers in addition to the main typer loop). */
+    var accumulatedTyperTime: Long = 0L
+
     /** the content of the compilation unit in tree form */
     var body: Tree = EmptyTree
 

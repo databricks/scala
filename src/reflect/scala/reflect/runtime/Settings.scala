@@ -60,6 +60,7 @@ private[reflect] class Settings extends MutableSettings {
 
   val YhotStatisticsEnabled = new BooleanSetting(false) { override def postSetHook() = if (v && YstatisticsEnabled.value) StatisticsStatics.enableHotStatsAndDeoptimize()  }
   val YstatisticsEnabled    = new BooleanSetting(false) { override def postSetHook() = if (v)                       StatisticsStatics.enableColdStatsAndDeoptimize() }
+  val YcompilationUnitStatistics = new BooleanSetting(false) { override def postSetHook() = if (v)                       StatisticsStatics.enableCompilationUnitStatsAndDeoptimize() }
 
   val Yrecursion = new IntSetting(0)
   def isScala212 = true
