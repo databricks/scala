@@ -63,6 +63,7 @@ abstract class MutableSettings extends AbsSettings {
 
   def YhotStatisticsEnabled: BooleanSetting
   def YstatisticsEnabled: BooleanSetting
+  def YcompilationUnitStatistics: BooleanSetting
 
   def Yrecursion: IntSetting
 }
@@ -84,5 +85,6 @@ object MutableSettings {
     @inline final def areHotStatisticsEnabled = (StatisticsStatics.HOT_STATS_GETTER.invokeExact(): Boolean) && settings.YhotStatisticsEnabled.value
     @inline final def isDebug: Boolean     = (StatisticsStatics.DEBUG_GETTER.invokeExact(): Boolean) && settings.debug.value
     @inline final def isDeveloper: Boolean = (StatisticsStatics.DEVELOPER_GETTER.invokeExact(): Boolean) && settings.developer.value
+    @inline final def areCompilationUnitStatisticsEnabled = (StatisticsStatics.COMPILATION_UNIT_STATS_GETTER.invokeExact(): Boolean) && settings.YcompilationUnitStatistics.value
   }
 }
