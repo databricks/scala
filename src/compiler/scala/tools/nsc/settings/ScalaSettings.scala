@@ -636,6 +636,9 @@ trait ScalaSettings extends StandardScalaSettings with Warnings { _: MutableSett
   val logFreeTypes       = BooleanSetting("-Vfree-types", "Print a message when reification resorts to generating a free type.")
     .withAbbreviation("-Xlog-free-types")
 
+  val YcompilationUnitStatistics = BooleanSetting("-Ycompilation-unit-statistics", "Collect compilation unit statistics.").withPostSetHook(s => if (s.value) StatisticsStatics.enableCompilationUnitStatsAndDeoptimize())
+  val YshowCompilationUnitStatistics = BooleanSetting("-Yshow-compilation-unit-statistics", "Print compilation unit statistics.").withPostSetHook(_ => YcompilationUnitStatistics.value = true)
+
   /** Groups of Settings.
    */
   val future        = BooleanSetting("-Xfuture", "Replaced by -Xsource.").withDeprecationMessage("Not used since 2.13.")

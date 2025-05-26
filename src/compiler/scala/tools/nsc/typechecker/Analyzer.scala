@@ -123,7 +123,9 @@ trait Analyzer extends AnyRef
       def apply(unit: CompilationUnit): Unit = {
         try {
           val typer = newTyper(rootContext(unit))
-          unit.body = typer.typed(unit.body)
+          currentRun.measureTyperTime(unit) {
+            unit.body = typer.typed(unit.body)
+          }
           // interactive typed may finish by throwing a `TyperResult`
           if (!settings.Youtline.value) {
             while (unit.toCheck.nonEmpty) {
