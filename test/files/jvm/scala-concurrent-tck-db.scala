@@ -1,4 +1,4 @@
-// java: -Dneeds.forked.jvm -Ddatabricks.completeAllExceptions=true
+//> using javaOpt -Dneeds.forked.jvm -Ddatabricks.completeAllExceptions=true
 
 import scala.concurrent.{
   Future,
