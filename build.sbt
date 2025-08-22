@@ -542,7 +542,6 @@ lazy val compiler = configureAsSubproject(project)
     Compile / packageBin / products :=
       (Compile / packageBin / products).value ++
         (Compile / dependencyClasspath).value.filter(_.get(moduleID.key).map(id => (id.organization, id.name, id.revision)) match {
-          case Some((diffUtilsDep.organization, diffUtilsDep.name, diffUtilsDep.revision)) => true
           case Some((asmDep.organization, asmDep.name, asmDep.revision)) => true
           case _ => false
         }).map(_.data) ++
