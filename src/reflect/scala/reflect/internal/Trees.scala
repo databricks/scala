@@ -18,7 +18,7 @@ import Flags._
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.reflect.macros.Attachments
-import util.{ReusableInstance, Statistics}
+import util.{Position, ReusableInstance, Statistics}
 
 trait Trees extends api.Trees {
   self: SymbolTable =>
@@ -421,14 +421,37 @@ trait Trees extends api.Trees {
       }
   }
 
-  case class ImportSelector(name: Name, namePos: Int, rename: Name, renamePos: Int) extends ImportSelectorApi
+  case class ImportSelector(name: Name, namePos: Int, rename: Name, renamePos: Int) extends ImportSelectorApi {
+    def isWildcard = name == nme.WILDCARD && rename == null
+    def isGiven    = name == nme.WILDCARD && rename == nme.`given`
+    def isMask     = name != nme.WILDCARD && rename == nme.WILDCARD
+    def isRename   = name != rename && rename != null && rename != nme.WILDCARD
+    def isSpecific = !isWildcard
+    private def isLiteralWildcard = name == nme.WILDCARD && rename == nme.WILDCARD
+    private def sameName(name: Name, other: Name) =  (name eq other) || (name ne null) && name.start == other.start && name.length == other.length
+    def hasName(other: Name) = sameName(name, other)
+    def introduces(target: Name) =
+      if (target == nme.WILDCARD) isLiteralWildcard
+      else target != null && !isGiven && sameName(rename, target)
+  }
   object ImportSelector extends ImportSelectorExtractor {
     val wild     = ImportSelector(nme.WILDCARD, -1, null, -1)
     val wildList = List(wild) // OPT This list is shared for performance.
   }
 
   case class Import(expr: Tree, selectors: List[ImportSelector])
-       extends SymTree with ImportApi
+       extends SymTree with ImportApi {
+    def posOf(sel: ImportSelector): Position = {
+      val pos0 = this.pos
+      val start = sel.namePos
+      if (start >= 0 && selectors.contains(sel)) {
+        val hasRename = sel.rename != null && sel.renamePos >= 0 // !sel.isWildcard
+        val end = if (hasRename) sel.renamePos + sel.rename.length else start + sel.name.length
+        Position.range(pos0.source, start, start, end)
+      }
+      else pos0
+    }
+  }
   object Import extends ImportExtractor
 
   case class Template(parents: List[Tree], self: ValDef, body: List[Tree])

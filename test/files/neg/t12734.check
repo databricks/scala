@@ -1,0 +1,7 @@
+t12734.scala:3: error: object AssertionErrer is not a member of package java.lang
+import java.lang.{AssertionErrer, Integer => JInt, String, Thread}
+                  ^
+t12734.scala:5: error: object connection is not a member of package scala
+import scala.connection._
+             ^
+two errors found

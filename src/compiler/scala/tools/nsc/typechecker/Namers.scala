@@ -353,7 +353,7 @@ trait Namers extends MethodSynthesis {
     }
 
     def createImportSymbol(tree: Import) =
-      NoSymbol.newImport(tree.pos) setInfo (namerOf(tree.symbol) importTypeCompleter tree)
+      NoSymbol.newImport(tree.pos).setInfo(namerOf(tree.symbol).importTypeCompleter(tree))
 
     /** All PackageClassInfoTypes come from here. */
     def createPackageSymbol(pos: Position, pid: RefTree): Symbol = {
@@ -766,7 +766,7 @@ trait Namers extends MethodSynthesis {
       newNamer(context.make(tree, sym.moduleClass, sym.info.decls)) enterSyms tree.stats
     }
 
-    private def enterImport(tree: Import) = {
+    private def enterImport(tree: Import): Unit = {
       val sym = createImportSymbol(tree)
       tree.symbol = sym
     }

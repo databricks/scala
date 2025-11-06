@@ -1606,8 +1606,7 @@ trait Contexts { self: Analyzer =>
 
   class ImportInfo(val tree: Import, val depth: Int) {
     def pos = tree.pos
-    def posOf(sel: ImportSelector) =
-      if (sel.namePos >= 0) tree.pos withPoint sel.namePos else tree.pos
+    def posOf(sel: ImportSelector) = tree.posOf(sel)
 
     /** The prefix expression */
     def qual: Tree = tree.symbol.info match {

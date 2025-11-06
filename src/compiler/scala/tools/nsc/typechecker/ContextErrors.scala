@@ -354,8 +354,8 @@ trait ContextErrors {
       def AmbiguousParentClassError(tree: Tree) =
         issueNormalTypeError(tree, "ambiguous parent class qualifier")
 
-      //typedSelect
-      def NotAMemberError(sel: Tree, qual: Tree, name: Name) = {
+      //typedSelect or checkSelector
+      def NotAMemberError(sel: Tree /*Select|Import*/, qual: Tree, name: Name) = {
         def errMsg = {
           val owner            = qual.tpe.typeSymbol
           val target           = qual.tpe.widen
@@ -390,7 +390,14 @@ trait ContextErrors {
             else s"$nameString is not a member of $targetStr$addendum"
           )
         }
-        issueNormalTypeError(sel, errMsg)
+        sel match {
+          case tree: Import => // selector name is unique; use it to improve position
+            tree.selectors.find(_.introduces(name)) match {
+              case Some(badsel) => issueTypeError(PosAndMsgTypeError(tree.posOf(badsel), errMsg))
+              case _ => issueNormalTypeError(sel, errMsg)
+            }
+          case _ => issueNormalTypeError(sel, errMsg)
+        }
         // the error has to be set for the copied tree, otherwise
         // the error remains persistent across multiple compilations
         // and causes problems
