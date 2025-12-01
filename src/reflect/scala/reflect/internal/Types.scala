@@ -4738,10 +4738,16 @@ trait Types
         invalidateCaches(tp, updatedSyms)
       }
 
-  def invalidateCaches(t: Type, updatedSyms: List[Symbol]): Unit =
+  def invalidateCaches(t: Type, updatedSyms: List[Symbol]): Unit = {
+    def needClearBaseTypeCache(ct: CompoundType) = {
+      // was `ct.baseClasses.exists(changedSymbols)`, but `baseClasses` may force types early (scala/bug#13112)
+      val cache = ct.baseTypeSeqCache
+      cache != null && updatedSyms.exists(cache.baseTypeIndex(_) >= 0)
+    }
+
     t match {
       case tr: TypeRef      if updatedSyms.contains(tr.sym) => tr.invalidateTypeRefCaches()
-      case ct: CompoundType if ct.baseClasses.exists(updatedSyms.contains) => ct.invalidatedCompoundTypeCaches()
+      case ct: CompoundType if needClearBaseTypeCache(ct) => ct.invalidatedCompoundTypeCaches()
       case st: SingleType =>
         if (updatedSyms.contains(st.sym)) st.invalidateSingleTypeCaches()
         val underlying = st.underlying
@@ -4749,6 +4755,7 @@ trait Types
           invalidateCaches(underlying, updatedSyms)
       case _ =>
     }
+  }
 
 
   val shorthands = Set(
