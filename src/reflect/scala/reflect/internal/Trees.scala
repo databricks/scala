@@ -545,7 +545,7 @@ trait Trees extends api.Trees {
       if (start >= 0 && selectors.contains(sel)) {
         val hasRename = sel.rename != null && sel.renamePos >= 0 // !sel.isWildcard
         val end = if (hasRename) sel.renamePos + sel.rename.length else start + sel.name.length
-        pos0.withStart(start).withEnd(end) ^ start
+        pos0.copyRange(start, start, end)
       }
       else pos0
     }

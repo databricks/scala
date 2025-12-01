@@ -133,13 +133,16 @@ private[util] trait InternalPositionImpl {
   final def makeTransparentIf(cond: Boolean): Position =
     if (cond && isOpaqueRange) Position.transparent(source, start, point, end) else this
 
-  /** Copy a range position with a changed value.
-   */
+  /* Copy a range position with a changed value. */
+  /* Note: the result is validated (start <= end), use `copyRange` to update both at the same time. */
   def withStart(start: Int): Position          = copyRange(start = start)
   def withPoint(point: Int): Position          = if (isRange) copyRange(point = point) else Position.offset(source, point)
   def withEnd(end: Int): Position              = copyRange(end = end)
   def withSource(source: SourceFile): Position = copyRange(source = source)
   def withShift(shift: Int): Position          = Position.range(source, start + shift, point + shift, end + shift)
+
+  def copyRange(start: Int = start, point: Int = point, end: Int = end, source: SourceFile = source) =
+    Position.range(source, start, point, end)
 
   /** Convert a range position to a simple offset.
    */
@@ -233,8 +236,6 @@ private[util] trait InternalPositionImpl {
     that.isDefined && this.point == that.point && this.source.file == that.source.file
 
   private def asOffset(point: Int): Position = Position.offset(source, point)
-  private def copyRange(source: SourceFile = source, start: Int = start, point: Int = point, end: Int = end): Position =
-    Position.range(source, start, point, end)
   private def hasSource                      = source ne NoSourceFile
   private def bothRanges(that: Position)     = isRange && that.isRange
   private def bothDefined(that: Position)    = isDefined && that.isDefined
