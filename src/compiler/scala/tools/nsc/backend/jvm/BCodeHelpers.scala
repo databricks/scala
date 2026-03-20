@@ -347,6 +347,17 @@ abstract class BCodeHelpers extends BCodeIdiomatic {
     cd.impl.body collect { case dd: DefDef => dd.symbol }
   }
 
+  /** Members omitted from classfiles when `-Youtline` (synthetics / mangled names). Constructors and clinit are never omitted. */
+  final def outlineOmitMember(sym: Symbol): Boolean = {
+    sym.isBridge ||
+      sym.isAnonymousFunction ||
+      sym.isDelambdafyFunction ||
+      sym.isDefaultGetter ||
+      (sym.name.containsName(nme.ANON_FUN_NAME)) ||
+      (sym.name.containsName(nme.DEFAULT_GETTER_STRING)) ||
+      (sym.isTerm && !sym.isMethod && (sym.name containsChar '$') && sym.name != nme.MODULE_INSTANCE_FIELD)
+  }
+
   /*
    *  must-single-thread
    */
@@ -797,24 +808,35 @@ abstract class BCodeHelpers extends BCodeIdiomatic {
 
       mirrorMethod.visitCode()
 
-      val codeStart: Label = new Label().tap(mirrorMethod.visitLabel)
-      mirrorMethod.visitFieldInsn(asm.Opcodes.GETSTATIC, moduleName, strMODULE_INSTANCE_FIELD, classBTypeFromSymbol(moduleClass).descriptor)
+      if (settings.Youtline.value) {
+        val codeStart: Label = new Label().tap(mirrorMethod.visitLabel)
+        GenBCode.visitOutlineUoeStub(mirrorMethod)
+        val codeEnd = new Label().tap(mirrorMethod.visitLabel)
+        methodInfo.params.lazyZip(paramJavaTypes).foldLeft(0) {
+          case (idx, (p, tp)) =>
+            mirrorMethod.visitLocalVariable(p.name.encoded, tp.descriptor, null, codeStart, codeEnd, idx)
+            idx + tp.size
+        }
+      } else {
+        val codeStart: Label = new Label().tap(mirrorMethod.visitLabel)
+        mirrorMethod.visitFieldInsn(asm.Opcodes.GETSTATIC, moduleName, strMODULE_INSTANCE_FIELD, classBTypeFromSymbol(moduleClass).descriptor)
 
-      var index = 0
-      for(jparamType <- paramJavaTypes) {
-        mirrorMethod.visitVarInsn(jparamType.typedOpcode(asm.Opcodes.ILOAD), index)
-        assert(!jparamType.isInstanceOf[MethodBType], jparamType)
-        index += jparamType.size
-      }
+        var index = 0
+        for(jparamType <- paramJavaTypes) {
+          mirrorMethod.visitVarInsn(jparamType.typedOpcode(asm.Opcodes.ILOAD), index)
+          assert(!jparamType.isInstanceOf[MethodBType], jparamType)
+          index += jparamType.size
+        }
 
-      mirrorMethod.visitMethodInsn(asm.Opcodes.INVOKEVIRTUAL, moduleName, mirrorMethodName, methodBTypeFromSymbol(m).descriptor, false)
-      mirrorMethod.visitInsn(jReturnType.typedOpcode(asm.Opcodes.IRETURN))
-      val codeEnd = new Label().tap(mirrorMethod.visitLabel)
+        mirrorMethod.visitMethodInsn(asm.Opcodes.INVOKEVIRTUAL, moduleName, mirrorMethodName, methodBTypeFromSymbol(m).descriptor, false)
+        mirrorMethod.visitInsn(jReturnType.typedOpcode(asm.Opcodes.IRETURN))
+        val codeEnd = new Label().tap(mirrorMethod.visitLabel)
 
-      methodInfo.params.lazyZip(paramJavaTypes).foldLeft(0) {
-        case (idx, (p, tp)) =>
-          mirrorMethod.visitLocalVariable(p.name.encoded, tp.descriptor, null, codeStart, codeEnd, idx)
-          idx + tp.size
+        methodInfo.params.lazyZip(paramJavaTypes).foldLeft(0) {
+          case (idx, (p, tp)) =>
+            mirrorMethod.visitLocalVariable(p.name.encoded, tp.descriptor, null, codeStart, codeEnd, idx)
+            idx + tp.size
+        }
       }
 
       mirrorMethod.visitMaxs(0, 0) // just to follow protocol, dummy arguments

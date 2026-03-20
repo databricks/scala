@@ -2447,7 +2447,7 @@ trait Typers extends Adaptations with Tags with TypersTracking with PatternTyper
             case Some(ChangeOwnerAttachment(originalOwner)) => ddef.rhs.changeOwner(originalOwner, ddef.symbol)
           }
         var rhs1 =
-          if (ddef.name == nme.CONSTRUCTOR && !ddef.symbol.hasStaticFlag) { // need this to make it possible to generate static ctors
+          if (nme.isConstructorName(ddef.name) && !ddef.symbol.hasStaticFlag) { // need this to make it possible to generate static ctors
             if (!meth.isPrimaryConstructor &&
               (!meth.owner.isClass ||
                 meth.owner.isModuleClass ||
@@ -6605,7 +6605,15 @@ trait Typers extends Adaptations with Tags with TypersTracking with PatternTyper
     final def transformedOrTyped(tree: Tree, mode: Mode, pt: Type): Tree = {
       lookupTransformed(tree) match {
         case Some(tree1) => tree1
-        case _           => if (canSkipRhs(tree)) EmptyTree else typed(tree, mode, pt)
+        case _ =>
+          if (canSkipRhs(tree)) {
+            if (tree.isEmpty) tree
+            else {
+              val stub = atPos(tree.pos) { gen.mkNullaryCall(Predef_???, Nil) }
+              typed(stub, mode, pt)
+            }
+          } else
+            typed(tree, mode, pt)
       }
     }
     final def lookupTransformed(tree: Tree): Option[Tree] =

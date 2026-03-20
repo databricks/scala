@@ -278,7 +278,7 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
     }
 
     def addClassFields(): Unit = {
-      for (f <- fieldSymbols(claszSymbol)) {
+      for (f <- fieldSymbols(claszSymbol) if !settings.Youtline.value || !outlineOmitMember(f)) {
         val javagensig = getGenericSignature(f, claszSymbol)
         val flags = javaFieldFlags(f)
 
@@ -540,7 +540,10 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
 
         case dd : DefDef =>
           val sym = dd.symbol
-          if (needsStaticImplMethod(sym)) {
+          if (settings.Youtline.value && outlineOmitMember(sym)) {
+            ()
+          }
+          else if (needsStaticImplMethod(sym)) {
             if (sym.isMixinConstructor) {
               val statified = global.gen.mkStatic(dd, sym.name, _.cloneSymbol)
               genDefDef(statified)
@@ -596,6 +599,37 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
 
     } // end of method initJMethod
 
+    /** JVM requires a super call before other code; append shared `UnsupportedOperationException` stub. */
+    private def tryEmitOutlineConstructor(dd: DefDef, flags: Int, params: List[ValDef]): Boolean = dd.rhs match {
+      case blk: Block =>
+        val stats = blk.stats
+        val expr0 = blk.expr
+        val (uptoSuper, _) = treeInfo.splitAtSuper(stats, classOnly = false)
+        val unitLit = Literal(Constant(())).setType(definitions.UnitTpe).setPos(dd.rhs.pos)
+        def run(bodyTree: Tree): Boolean = {
+          resetMethodBookkeeping(dd)
+          for (p <- params) locals.makeLocal(p.symbol)
+          initJMethod(flags, params.map(_.symbol))
+          for {
+            ld  <- labelDefsAtOrUnder.getOrElse(dd.rhs, Nil)
+            ldp <- ld.params
+          } if (!locals.contains(ldp.symbol)) locals.makeLocal(ldp.symbol)
+          lineNumber(dd.rhs)
+          genLoadTo(bodyTree, typeToBType(definitions.UnitTpe), LoadDestination.FallThrough)
+          GenBCode.appendOutlineUoeClones(mnode)
+          true
+        }
+        if (uptoSuper.nonEmpty)
+          run(Block(uptoSuper, unitLit).setType(definitions.UnitTpe).setPos(dd.rhs.pos))
+        else {
+          val e = treeInfo.stripNamedApplyBlock(expr0)
+          if (treeInfo.isSuperConstrCall(e)) run(e)
+          else false
+        }
+      case _ =>
+        false
+    }
+
     // the only method whose implementation is not emitted: getClass()
     def genDefDef(dd: DefDef): Unit = if (!definitions.isGetClass(dd.symbol)) {
       assert(mnode == null, "GenBCode detected nested method.")
@@ -605,14 +639,9 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
       returnType  = methodBTypeFromSymbol(dd.symbol).returnType
       isMethSymStaticCtor = methSymbol.isStaticConstructor
 
-      resetMethodBookkeeping(dd)
-
-      // add method-local vars for params
       val DefDef(_, _, _, vparamss, _, rhs) = dd
       assert(vparamss.isEmpty || vparamss.tail.isEmpty, s"Malformed parameter list: $vparamss")
       val params = if (vparamss.isEmpty) Nil else vparamss.head
-      for (p <- params) locals.makeLocal(p.symbol)
-      // debug assert((params.map(p => locals(p.symbol).tk)) == asmMethodType(methSymbol).getArgumentTypes.toList, "debug")
 
       // scala/bug#7324
       // https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-4.html#jvms-4.3.3
@@ -639,6 +668,29 @@ abstract class BCodeSkelBuilder extends BCodeHelpers {
         (if (methSymbol.isStrictFP)   asm.Opcodes.ACC_STRICT     else 0) |
         (if (isNative)                asm.Opcodes.ACC_NATIVE     else 0)  // native methods of objects are generated in mirror classes
 
+      if (settings.Youtline.value && !isAbstractMethod && !isNative && !methSymbol.isConstructor && !methSymbol.isStaticConstructor) {
+        initJMethod(flags, params.map(_.symbol))
+        lineNumber(rhs)
+        GenBCode.appendOutlineUoeClones(mnode)
+        if (AsmUtils.traceMethodEnabled && mnode.name.contains(AsmUtils.traceMethodPattern))
+          AsmUtils.traceMethod(mnode)
+        mnode = null
+        return
+      }
+
+      if (settings.Youtline.value && !isAbstractMethod && !isNative && methSymbol.isConstructor && !isCZStaticModule &&
+          tryEmitOutlineConstructor(dd, flags, params)) {
+        if (AsmUtils.traceMethodEnabled && mnode.name.contains(AsmUtils.traceMethodPattern))
+          AsmUtils.traceMethod(mnode)
+        mnode = null
+        return
+      }
+
+      resetMethodBookkeeping(dd)
+
+      // add method-local vars for params
+      for (p <- params) locals.makeLocal(p.symbol)
+      // debug assert((params.map(p => locals(p.symbol).tk)) == asmMethodType(methSymbol).getArgumentTypes.toList, "debug")
 
       initJMethod(flags, params.map(_.symbol))
 

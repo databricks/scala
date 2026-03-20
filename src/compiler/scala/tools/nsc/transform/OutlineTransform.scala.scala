@@ -1,8 +1,6 @@
 package scala.tools.nsc.transform
 
-import scala.collection.mutable
 import scala.reflect.internal.Flags
-import scala.reflect.io.AbstractFile
 import scala.tools.nsc.transform.Transform
 
 /**

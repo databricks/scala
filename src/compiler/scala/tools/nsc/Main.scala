@@ -26,6 +26,8 @@ class MainClass extends Driver with EvalLoop {
   override def newCompiler(): Global = Global(settings)
 
   override def doCompile(compiler: Global): Unit = {
+    // println("press enter to start")
+    // scala.io.StdIn.readLine()
     if (settings.resident.value) resident(compiler)
     else super.doCompile(compiler)
   }

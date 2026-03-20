@@ -15,6 +15,7 @@ package backend
 package jvm
 
 import scala.annotation.nowarn
+import scala.tools.asm
 import scala.tools.asm.Opcodes
 
 /**
@@ -91,6 +92,7 @@ abstract class GenBCode extends SubComponent {
       val initStart = statistics.startTimer(bcodeInitTimer)
       scalaPrimitives.init()
       bTypes.initialize()
+      GenBCode.initOutlineUoeTemplate()
       codeGen.initialize()
       postProcessorFrontendAccess.initialize()
       postProcessor.initialize(global)
@@ -120,4 +122,36 @@ object GenBCode {
 
   val CLASS_CONSTRUCTOR_NAME = "<clinit>"
   val INSTANCE_CONSTRUCTOR_NAME = "<init>"
+
+  /** Pre-built `throw new UnsupportedOperationException;` insn sequence for `-Youtline` (cloned per method). */
+  private[this] var outlineUoeInsnTemplate: Array[asm.tree.AbstractInsnNode] = _
+
+  private[jvm] def initOutlineUoeTemplate(): Unit = {
+    if (outlineUoeInsnTemplate eq null) {
+      val uoe = "java/lang/UnsupportedOperationException"
+      outlineUoeInsnTemplate = Array(
+        new asm.tree.TypeInsnNode(Opcodes.NEW, uoe),
+        new asm.tree.InsnNode(Opcodes.DUP),
+        new asm.tree.MethodInsnNode(Opcodes.INVOKESPECIAL, uoe, INSTANCE_CONSTRUCTOR_NAME, "()V", false),
+        new asm.tree.InsnNode(Opcodes.ATHROW)
+      )
+    }
+  }
+
+  /** Append cloned outline stub bytecode to a `MethodNode`. */
+  private[jvm] def appendOutlineUoeClones(mnode: asm.tree.MethodNode): Unit = {
+    var i = 0
+    while (i < outlineUoeInsnTemplate.length) {
+      mnode.instructions.add(outlineUoeInsnTemplate(i).clone(null))
+      i += 1
+    }
+  }
+
+  /** Inline the same stub via a `MethodVisitor` (mirror / forwarder paths). */
+  private[jvm] def visitOutlineUoeStub(mv: asm.MethodVisitor): Unit = {
+    mv.visitTypeInsn(Opcodes.NEW, "java/lang/UnsupportedOperationException")
+    mv.visitInsn(Opcodes.DUP)
+    mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/UnsupportedOperationException", INSTANCE_CONSTRUCTOR_NAME, "()V", false)
+    mv.visitInsn(Opcodes.ATHROW)
+  }
 }

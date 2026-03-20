@@ -61,6 +61,9 @@ object PostProcessorFrontendAccess {
   sealed trait CompilerSettings {
     def debug: Boolean
 
+    /** When true, classfiles use outline JVM emission (stub bodies, omitted mangled members). */
+    def Youtline: Boolean
+
     def target: String
 
     def outputDirectory(source: AbstractFile): AbstractFile
@@ -185,6 +188,8 @@ object PostProcessorFrontendAccess {
       import global.{settings => s}
 
       @inline def debug: Boolean = s.isDebug
+
+      val Youtline: Boolean = s.Youtline.value
 
       val target: String = s.targetValue.tap { value =>
         s.releaseValue.foreach { release =>

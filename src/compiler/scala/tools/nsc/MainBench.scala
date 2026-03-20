@@ -21,8 +21,8 @@ object MainBench extends Driver with EvalLoop {
 
   override def newCompiler() = theCompiler
 
-  val NIter = 50
-  val NBest = 10
+  val NIter = sys.props.get("scalac.bench.iter").fold(50)(_.toInt)
+  val NBest = sys.props.get("scalac.bench.best").fold(10)(_.toInt)
 
   override def main(args: Array[String]) = {
     val times = new Array[Long](NIter)

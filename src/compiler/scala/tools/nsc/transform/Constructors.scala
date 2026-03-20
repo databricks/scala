@@ -469,7 +469,7 @@ abstract class Constructors extends Statics with Transform with TypingTransforme
     private val (primaryConstr, _primaryConstrParams, primaryConstrBody) = stats collectFirst {
       case dd@DefDef(_, _, _, vps :: Nil, _, rhs: Block) if dd.symbol.isPrimaryConstructor => (dd, vps map (_.symbol), rhs)
     } getOrElse {
-      abort("no constructor in template: impl = " + impl)
+      abort(s"[${unit.source.file}]no constructor in template: impl = " + impl)
     }
 
     def primaryConstrParams  = _primaryConstrParams
@@ -485,7 +485,7 @@ abstract class Constructors extends Statics with Transform with TypingTransforme
 
     // The constructor parameter with given getter name. This means the parameter name
     // decodes to the same name that the getter decodes to
-    def parameterNamed(name: Name): Either[String, Symbol] =  
+    def parameterNamed(name: Name): Either[String, Symbol] =
       primaryConstrParams.filter(_.name.decodedName == name.decodedName) match {
         case List(p) => Right(p)
         case Nil     => Left(s"No constructor parameter named $name (decoded to ${name.decodedName}) found in list of constructor parameters $primaryConstrParams (decoded to ${primaryConstrParams.map(_.decodedName)})")

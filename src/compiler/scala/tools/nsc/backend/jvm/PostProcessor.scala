@@ -63,10 +63,13 @@ abstract class PostProcessor extends PerRunInit {
     val internalName = classNode.name
     val bytes = try {
       if (!clazz.isArtifact) {
-        localOptimizations(classNode)
-        val indyLambdaBodyMethods = backendUtils.indyLambdaBodyMethods(internalName)
-        if (indyLambdaBodyMethods.nonEmpty)
-          backendUtils.addLambdaDeserialize(classNode, indyLambdaBodyMethods)
+        if (!frontendAccess.compilerSettings.Youtline)
+          localOptimizations(classNode)
+        if (!frontendAccess.compilerSettings.Youtline) {
+          val indyLambdaBodyMethods = backendUtils.indyLambdaBodyMethods(internalName)
+          if (indyLambdaBodyMethods.nonEmpty)
+            backendUtils.addLambdaDeserialize(classNode, indyLambdaBodyMethods)
+        }
       }
 
       warnCaseInsensitiveOverwrite(clazz)
