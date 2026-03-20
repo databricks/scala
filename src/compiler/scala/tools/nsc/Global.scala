@@ -513,6 +513,10 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
     if (settings.YmacroAnnotations.value) new { val global: Global.this.type = Global.this } with Analyzer with MacroAnnotationNamers
     else new { val global: Global.this.type = Global.this } with Analyzer
 
+  object PruneLateSourcesComponent extends PruneLateSources {
+    val global: Global.this.type = Global.this
+  }
+
   // phaseName = "superaccessors"
   object superAccessors extends {
     val global: Global.this.type = Global.this
@@ -701,6 +705,7 @@ class Global(var currentSettings: Settings, reporter0: Reporter)
     // desirable to preserve.
     List(
       syntaxAnalyzer          -> "parse source into ASTs, perform simple desugaring",
+      // PruneLateSources        -> "remove method bodies (outline compile mode)",
       analyzer.namerFactory   -> "resolve names, attach symbols to named trees",
       analyzer.packageObjects -> "load package objects",
       analyzer.typerFactory   -> "the meat and potatoes: type the trees",
