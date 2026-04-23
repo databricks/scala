@@ -257,15 +257,26 @@ private[internal] trait TypeMaps {
     /** The index of the first symbol in `origSyms` which would have its info
       * transformed by this type map.
       */
+    // OPT plain `while` loop with direct head/tail access avoids the `::` extractor
+    //     dispatch per element that the pattern match generated.  For long symbol
+    //     lists (common in `mapOver` for method params / type params), this tightens
+    //     the inner loop considerably. `applyToSymbolInfo` is inlined so HotSpot
+    //     can fold the per-map `trackVariance` check at JIT time.
     private def firstChangedSymbol(origSyms: List[Symbol]): Int = {
-      @tailrec def loop(i: Int, syms: List[Symbol]): Int = syms match {
-        case x :: xs =>
-          val info = x.info
-          if (applyToSymbolInfo(x, info) eq info) loop(i+1, xs)
-          else i
-        case _ => -1
+      val tv = trackVariance
+      var syms = origSyms
+      var i = 0
+      while (syms ne Nil) {
+        val x = syms.head
+        val info = x.info
+        val info1 =
+          if (tv && !variance.isInvariant && x.isAliasType) withVariance(Invariant)(this(info))
+          else this(info)
+        if (info1 ne info) return i
+        i += 1
+        syms = syms.tail
       }
-      loop(0, origSyms)
+      -1
     }
 
     /** Map this function over given scope */
