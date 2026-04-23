@@ -763,12 +763,20 @@ private[internal] trait TypeMaps {
     private[this] var fromMin = Int.MaxValue
     private[this] var fromMax = Int.MinValue
     private[this] var fromSize = 0
-    from.foreach {
-      sym =>
-        fromMin = math.min(fromMin, sym.id)
-        fromMax = math.max(fromMax, sym.id)
+    // OPT explicit while loop avoids the closure/dispatch of List.foreach which
+    //     was visible in profiles as a constructor hotspot (SubstMap is re-allocated
+    //     on every `substSym` / `subst`).
+    locally {
+      var fs = from
+      while (fs ne Nil) {
+        val sym = fs.head
+        val id = sym.id
+        if (id < fromMin) fromMin = id
+        if (id > fromMax) fromMax = id
         fromSize += 1
         if (sym.isTerm) fromHasTermSymbol = true
+        fs = fs.tail
+      }
     }
 
     /** Are `sym` and `sym1` the same? Can be tuned by subclasses. */
