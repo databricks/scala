@@ -333,20 +333,21 @@ trait Scopes extends api.Scopes { self: SymbolTable =>
      *  change to use iterators as too costly.
      */
     def lookupEntry(name: Name): ScopeEntry = {
-      var e: ScopeEntry = null
+      // OPT hoist the `flat` branch out of the inner loop so the compiler/JIT can
+      //     generate a tight loop with a single field-read per step. `ScopeEntry.name`
+      //     was already `final` but the per-iteration branch on `flat` pessimizes things.
       val flat = phase.flatClasses
       if (hashtable ne null) {
-        e = hashtable(name.start & HASHMASK)
-        while ((e ne null) && (e.name(flat) ne name)) {
-          e = e.tail
-        }
+        var e = hashtable(name.start & HASHMASK)
+        if (flat) while ((e ne null) && (e.sym.name ne name))    e = e.tail
+        else      while ((e ne null) && (e.sym.rawname ne name)) e = e.tail
+        e
       } else {
-        e = elems
-        while ((e ne null) && (e.name(flat) ne name)) {
-          e = e.next
-        }
+        var e = elems
+        if (flat) while ((e ne null) && (e.sym.name ne name))    e = e.next
+        else      while ((e ne null) && (e.sym.rawname ne name)) e = e.next
+        e
       }
-      e
     }
 
     /** lookup next entry with same name as this one
@@ -355,13 +356,26 @@ trait Scopes extends api.Scopes { self: SymbolTable =>
      *  change to use iterators as too costly.
      */
     def lookupNextEntry(entry: ScopeEntry): ScopeEntry = {
+      // OPT mirror lookupEntry: hoist flat-branch outside the tight loop
       var e = entry
       val flat = phase.flatClasses
-      val entryName = entry.name(flat)
-      if (hashtable ne null)
-        do { e = e.tail } while ((e ne null) && e.name(flat) != entryName)
-      else
-        do { e = e.next } while ((e ne null) && e.name(flat) != entryName)
+      if (hashtable ne null) {
+        if (flat) {
+          val entryName = entry.sym.name
+          do { e = e.tail } while ((e ne null) && (e.sym.name ne entryName))
+        } else {
+          val entryName = entry.sym.rawname
+          do { e = e.tail } while ((e ne null) && (e.sym.rawname ne entryName))
+        }
+      } else {
+        if (flat) {
+          val entryName = entry.sym.name
+          do { e = e.next } while ((e ne null) && (e.sym.name ne entryName))
+        } else {
+          val entryName = entry.sym.rawname
+          do { e = e.next } while ((e ne null) && (e.sym.rawname ne entryName))
+        }
+      }
       e
     }
 
