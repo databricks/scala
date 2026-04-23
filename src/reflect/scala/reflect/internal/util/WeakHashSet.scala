@@ -156,54 +156,45 @@ final class WeakHashSet[A <: AnyRef](val initialCapacity: Int, val loadFactor: D
   }
 
   // from scala.reflect.internal.Set, find an element or null if it isn't contained
-  override def findEntry(elem: A): A = elem match {
-    case null => throw new NullPointerException("WeakHashSet cannot hold nulls")
-    case _    => {
-      removeStaleEntries()
-      val hash = elem.hashCode
-      val bucket = bucketFor(hash)
-
-      @tailrec
-      def linkedListLoop(entry: Entry[A]): A = entry match {
-        case null                    => null.asInstanceOf[A]
-        case _                       => {
-          val entryElem = entry.get
-          if (elem.equals(entryElem)) entryElem
-          else linkedListLoop(entry.tail)
-        }
+  override def findEntry(elem: A): A = {
+    // OPT: direct while loop with three fast-paths before the virtual `equals`:
+    //      1) `entry.hash == hash` rejects bucket-collisions without touching the weak ref
+    //      2) `entry.get` null-check skips GC'd entries
+    //      3) `elem eq entryElem` handles the common hash-consing case where the same
+    //         canonical instance is passed in (via `Types.unique`).
+    if (elem == null) throw new NullPointerException("WeakHashSet cannot hold nulls")
+    removeStaleEntries()
+    val hash = elem.hashCode
+    val bucket = bucketFor(hash)
+    var entry = table(bucket)
+    while (entry ne null) {
+      if (entry.hash == hash) {
+        val entryElem = entry.get
+        if ((entryElem ne null) && ((elem eq entryElem) || elem.equals(entryElem))) return entryElem
       }
-
-      linkedListLoop(table(bucket))
+      entry = entry.tail
     }
+    null.asInstanceOf[A]
   }
   // add an element to this set unless it's already in there and return the element
-  def findEntryOrUpdate(elem: A): A = elem match {
-    case null => throw new NullPointerException("WeakHashSet cannot hold nulls")
-    case _    => {
-      removeStaleEntries()
-      val hash = elem.hashCode
-      val bucket = bucketFor(hash)
-      val oldHead = table(bucket)
-
-      def add() = {
-        table(bucket) = new Entry(elem, hash, oldHead, queue)
-        count += 1
-        if (count > threshold) resize()
-        elem
+  def findEntryOrUpdate(elem: A): A = {
+    if (elem == null) throw new NullPointerException("WeakHashSet cannot hold nulls")
+    removeStaleEntries()
+    val hash = elem.hashCode
+    val bucket = bucketFor(hash)
+    val oldHead = table(bucket)
+    var entry = oldHead
+    while (entry ne null) {
+      if (entry.hash == hash) {
+        val entryElem = entry.get
+        if ((entryElem ne null) && ((elem eq entryElem) || elem.equals(entryElem))) return entryElem
       }
-
-      @tailrec
-      def linkedListLoop(entry: Entry[A]): A = entry match {
-        case null                    => add()
-        case _                       => {
-          val entryElem = entry.get
-          if (elem.equals(entryElem)) entryElem
-          else linkedListLoop(entry.tail)
-        }
-      }
-
-      linkedListLoop(oldHead)
+      entry = entry.tail
     }
+    table(bucket) = new Entry(elem, hash, oldHead, queue)
+    count += 1
+    if (count > threshold) resize()
+    elem
   }
 
   // add an element to this set unless it's already in there and return this set
