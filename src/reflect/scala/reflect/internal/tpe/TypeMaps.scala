@@ -134,12 +134,12 @@ private[internal] trait TypeMaps {
           else singleType(pre1, sym)
         }
       case MethodType(params, result) =>
-        val params1 = flipped(mapOver(params))
+        val params1 = flippedMapOver(params)
         val result1 = this(result)
         if ((params1 eq params) && (result1 eq result)) tp
         else copyMethodType(tp, params1, result1.substSym(params, params1))
       case PolyType(tparams, result) =>
-        val tparams1 = flipped(mapOver(tparams))
+        val tparams1 = flippedMapOver(tparams)
         val result1 = this(result)
         if ((tparams1 eq tparams) && (result1 eq result)) tp
         else PolyType(tparams1, result1.substSym(tparams, tparams1))
@@ -154,7 +154,7 @@ private[internal] trait TypeMaps {
         if ((thistp1 eq thistp) && (supertp1 eq supertp)) tp
         else SuperType(thistp1, supertp1)
       case TypeBounds(lo, hi) =>
-        val lo1 = flipped(this(lo))
+        val lo1 = flippedApply(lo)
         val hi1 = this(hi)
         if ((lo1 eq lo) && (hi1 eq hi)) tp
         else TypeBounds(lo1, hi1)
@@ -216,6 +216,28 @@ private[internal] trait TypeMaps {
       try body
       finally if (trackVariance) variance = variance.flip
     }
+
+    // OPT Specialized versions of `flipped` that avoid by-name closure allocation.
+    //     The by-name + `@inline` combo only helps with `-opt:l:inline`; without it
+    //     HotSpot must rely on escape analysis to eliminate the Function0 allocations.
+    //     Hard-coding the two concrete body shapes used in `mapOver` removes the
+    //     closures unconditionally and lets the non-trackVariance path become a
+    //     straight tail-call.
+    protected final def flippedMapOver(syms: List[Symbol]): List[Symbol] =
+      if (!trackVariance) mapOver(syms)
+      else {
+        variance = variance.flip
+        try mapOver(syms)
+        finally variance = variance.flip
+      }
+
+    protected final def flippedApply(tp: Type): Type =
+      if (!trackVariance) this(tp)
+      else {
+        variance = variance.flip
+        try this(tp)
+        finally variance = variance.flip
+      }
     protected final def mapOverArgs(args: List[Type], tparams: List[Symbol]): List[Type] = (
       if (trackVariance)
         map2Conserve(args, tparams)((arg, tparam) => withVariance(variance * tparam.variance)(this(arg)))
@@ -469,11 +491,16 @@ private[internal] trait TypeMaps {
     *  the result will be `tp` unchanged if `pre` is trivial and `clazz`
     *  is a symbol such that isPossiblePrefix(clazz) == false.
     */
-  def isPossiblePrefix(clazz: Symbol) = clazz.isClass && !clazz.isPackageClass
+  // OPT: final + @inline eliminates the trait-mixin forwarder that JFR saw as a hotspot;
+  //      the method is pure flag arithmetic so inlining it at callers costs nothing
+  //      and avoids a non-inlined INVOKEINTERFACE through the trait bridge.
+  @inline final def isPossiblePrefix(clazz: Symbol): Boolean = clazz.isClass && !clazz.isPackageClass
 
-  protected[internal] def skipPrefixOf(pre: Type, clazz: Symbol) = (
-    (pre eq NoType) || (pre eq NoPrefix) || !isPossiblePrefix(clazz)
-    )
+  // OPT Inline the body of `isPossiblePrefix` so that hot callers (notably
+  //     `AsSeenFromMap.loop` within `classParameterAsSeen`) skip the mixin
+  //     forwarder and two `INVOKEINTERFACE` calls that showed in JFR.
+  @inline protected[internal] final def skipPrefixOf(pre: Type, clazz: Symbol): Boolean =
+    (pre eq NoType) || (pre eq NoPrefix) || !(clazz.isClass && !clazz.isPackageClass)
 
   @deprecated("use new AsSeenFromMap instead", "2.12.0")
   final def newAsSeenFromMap(pre: Type, clazz: Symbol): AsSeenFromMap = new AsSeenFromMap(pre, clazz)
