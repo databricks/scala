@@ -470,9 +470,14 @@ case object Nil extends List[Nothing] {
   override def tail: List[Nothing] =
     throw new UnsupportedOperationException("tail of empty list")
   // Removal of equals method here might lead to an infinite recursion similar to IntMap.equals.
-  override def equals(that: Any) = that match {
-    case that1: scala.collection.GenSeq[_] => that1.isEmpty
-    case _ => false
+  override def equals(that: Any): Boolean = {
+    // OPT fast path for the common case of comparing against another List (including Nil)
+    // before falling back to the generic GenSeq case.
+    (this.asInstanceOf[AnyRef] eq that.asInstanceOf[AnyRef]) || (that match {
+      case that1: List[_]                    => that1.isEmpty
+      case that1: scala.collection.GenSeq[_] => that1.isEmpty
+      case _ => false
+    })
   }
 }
 

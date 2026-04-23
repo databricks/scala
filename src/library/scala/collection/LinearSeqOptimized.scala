@@ -255,7 +255,12 @@ trait LinearSeqOptimized[+A, +Repr <: LinearSeqOptimized[A, Repr]] extends Linea
       (this eq that1) || {
         var these = this
         var those = that1
-        while (!these.isEmpty && !those.isEmpty && these.head == those.head) {
+        while (!these.isEmpty && !those.isEmpty && {
+          val h1 = these.head
+          val h2 = those.head
+          // OPT reference equality short-circuit avoids boxed equals for interned/unique heads.
+          (h1.asInstanceOf[AnyRef] eq h2.asInstanceOf[AnyRef]) || h1 == h2
+        }) {
           these = these.tail
           those = those.tail
         }

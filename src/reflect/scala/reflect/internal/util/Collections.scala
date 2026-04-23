@@ -74,11 +74,15 @@ trait Collections {
     (thiss eq that) || {
       var these = thiss
       var those = that
-      while (!these.isEmpty && !those.isEmpty && these.head.equals(those.head)) {
+      while ((these ne Nil) && (those ne Nil) && {
+        val h1 = these.head
+        val h2 = those.head
+        (h1 eq h2) || ((h1 ne null) && h1.equals(h2))
+      }) {
         these = these.tail
         those = those.tail
       }
-      these.isEmpty && those.isEmpty
+      (these eq Nil) && (those eq Nil)
     }
   }
 
