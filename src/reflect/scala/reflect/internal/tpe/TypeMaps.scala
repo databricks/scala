@@ -859,7 +859,11 @@ private[internal] trait TypeMaps {
       false
     }
 
-    def apply(tp0: Type): Type = if (from.isEmpty) tp0 else {
+    // OPT `from eq Nil` is a direct reference compare vs the virtual `List.isEmpty`.
+    //     The empty-`from` path fires for every map built on a phantom/no-op substitution
+    //     (e.g., cloneSymbols with no real rebinding); avoiding the vtable lookup here
+    //     helps HotSpot inline the outer caller.
+    def apply(tp0: Type): Type = if (from eq Nil) tp0 else {
       val tp                    = mapOver(renameBoundSyms(tp0))
       def substFor(sym: Symbol) = subst(tp, sym, from, to)
 
@@ -877,7 +881,7 @@ private[internal] trait TypeMaps {
         // 3) replacing m by List in m[Int] should yield List[Int], not just List
         case TypeRef(NoPrefix, sym, args) =>
           val tcon = substFor(sym)
-          if ((tp eq tcon) || args.isEmpty) tcon
+          if ((tp eq tcon) || (args eq Nil)) tcon
           else appliedType(tcon.typeConstructor, args)
         case SingleType(NoPrefix, sym) =>
           substFor(sym)
@@ -918,7 +922,7 @@ private[internal] trait TypeMaps {
     private def substFor(sym: Symbol) = subst(sym, from, to)
 
     override def apply(tp: Type): Type = (
-      if (from.isEmpty) tp
+      if (from eq Nil) tp
       else tp match {
         case TypeRef(pre, sym, args) if pre ne NoPrefix =>
           val newSym = substFor(sym)
