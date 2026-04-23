@@ -743,7 +743,7 @@ trait Types
      *  symbols `from` in this type.
      */
     def subst(from: List[Symbol], to: List[Type]): Type =
-      if (from.isEmpty) this else substTypeMapCache(from, to)(this)
+      if (from eq Nil) this else substTypeMapCache(from, to)(this)
 
     /** Substitute symbols `to` for occurrences of symbols `from` in this type.
      *
@@ -751,8 +751,11 @@ trait Types
      * first, as otherwise symbols will immediately get rebound in typeRef to the old
      * symbol.
      */
+    // OPT `from eq Nil` is an unboxed reference compare vs the virtual `List.isEmpty`.
+    //     `substSym` is on a very hot compiler path (asSeenFrom / cloneInfo / memberType),
+    //     and elides the short-lived `SubstSymMap` allocation when there's nothing to do.
     def substSym(from: List[Symbol], to: List[Symbol]): Type =
-      if ((from eq to) || from.isEmpty) this
+      if ((from eq to) || (from eq Nil)) this
       else new SubstSymMap(from, to) apply this
 
     /** Substitute all occurrences of `ThisType(from)` in this type by `to`.
