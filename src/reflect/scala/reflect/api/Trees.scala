@@ -2591,10 +2591,15 @@ trait Trees { self: Universe =>
     def transformIdents(trees: List[Ident]): List[Ident] =
       trees mapConserve (tree => transform(tree).asInstanceOf[Ident])
     /** Traverses a list of trees with a given owner symbol. */
+    // OPT `exprOwner != currentOwner` and `EmptyTree != _` compared AnyRefs via
+    //     `BoxesRunTime.equals` (null + Number + Character + virtual dispatch). Symbol
+    //     and Tree equality are reference equality for our purposes here, so `ne`
+    //     compiles to a single `if_acmpne` instruction and avoids the runtime boxing
+    //     path entirely.  Called once per statement during typed/transform walks.
     def transformStats(stats: List[Tree], exprOwner: Symbol): List[Tree] =
       stats mapConserve (stat =>
-        if (exprOwner != currentOwner && stat.isTerm) atOwner(exprOwner)(transform(stat))
-        else transform(stat)) filter (EmptyTree != _)
+        if ((exprOwner ne currentOwner) && stat.isTerm) atOwner(exprOwner)(transform(stat))
+        else transform(stat)) filter (EmptyTree ne _)
     /** Transforms `Modifiers`. */
     def transformModifiers(mods: Modifiers): Modifiers = {
       if (mods.annotations.isEmpty) mods
