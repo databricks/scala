@@ -62,6 +62,9 @@ abstract class Duplicators extends Analyzer {
     protected override def matches(sym1: Symbol, sym2: Symbol) =
       if (sym2.isTypeSkolem) sym2.deSkolemize eq sym1
       else sym1 eq sym2
+    // Matching may succeed for skolem symbols whose ids are outside the range
+    // of `from`, so the id-range fast-reject is unsafe here.
+    protected override def fromMayContain(sym: Symbol): Boolean = true
   }
 
   private val invalidSyms: mutable.Map[Symbol, Tree] = perRunCaches.newMap[Symbol, Tree]()

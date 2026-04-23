@@ -1435,6 +1435,9 @@ abstract class SpecializeTypes extends InfoTransform with TypingTransformers {
       override def matches(sym1: Symbol, sym2: Symbol) =
         if (sym2.isTypeSkolem) sym2.deSkolemize eq sym1
         else sym1 eq sym2
+      // Skolem de-skolemization can match symbols whose ids are not in
+      // `from`'s id-range; disable the fast-reject.
+      override def fromMayContain(sym: Symbol): Boolean = true
     }
 
     private def isAccessible(sym: Symbol): Boolean =

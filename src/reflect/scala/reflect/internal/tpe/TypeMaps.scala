@@ -774,6 +774,17 @@ private[internal] trait TypeMaps {
     /** Are `sym` and `sym1` the same? Can be tuned by subclasses. */
     protected def matches(sym: Symbol, sym1: Symbol): Boolean = sym eq sym1
 
+    /** Is it possible that `sym` matches some element of `from`?
+     *  A fast necessary condition based on symbol ids, used to skip the linear
+     *  scan in `subst` when `sym` can't possibly match. Subclasses that override
+     *  `matches` to allow matching across symbols with different ids (e.g. via
+     *  skolem de-skolemization) must override this to always return `true`.
+     */
+    protected def fromMayContain(sym: Symbol): Boolean = {
+      val id = sym.id
+      id >= fromMin && id <= fromMax
+    }
+
     /** Map target to type, can be tuned by subclasses */
     protected def toType(fromtp: Type, tp: T): Type
 
@@ -790,12 +801,22 @@ private[internal] trait TypeMaps {
         tp
     }
 
-    @tailrec private def subst(tp: Type, sym: Symbol, from: List[Symbol], to: List[T]): Type = (
-      if (from.isEmpty) tp
-      // else if (to.isEmpty) error("Unexpected substitution on '%s': from = %s but to == Nil".format(tp, from))
-      else if (matches(from.head, sym)) toType(tp, to.head)
-      else subst(tp, sym, from.tail, to.tail)
-      )
+    // OPT Fast-reject via symbol-id range check before the linear scan.
+    //     When `from` is empty, `fromMin == Int.MaxValue` and `fromMax == Int.MinValue`,
+    //     so the range check returns false and we return `tp` without entering the loop.
+    private def subst(tp: Type, sym: Symbol, from: List[Symbol], to: List[T]): Type = {
+      if (!fromMayContain(sym)) tp
+      else {
+        var f = from
+        var t = to
+        while (f ne Nil) {
+          if (matches(f.head, sym)) return toType(tp, t.head)
+          f = f.tail
+          t = t.tail
+        }
+        tp
+      }
+    }
 
     private def fromContains(syms: List[Symbol]): Boolean = {
       def fromContains(sym: Symbol): Boolean = {
@@ -858,12 +879,20 @@ private[internal] trait TypeMaps {
       case TypeRef(pre, _, args) => copyTypeRef(fromtp, pre, sym, args)
       case SingleType(pre, _) => singleType(pre, sym)
     }
-    @tailrec private def subst(sym: Symbol, from: List[Symbol], to: List[Symbol]): Symbol = (
-      if (from.isEmpty) sym
-      // else if (to.isEmpty) error("Unexpected substitution on '%s': from = %s but to == Nil".format(sym, from))
-      else if (matches(from.head, sym)) to.head
-      else subst(sym, from.tail, to.tail)
-      )
+    // OPT See comment on `SubstMap.subst`; same fast-reject logic.
+    private def subst(sym: Symbol, from: List[Symbol], to: List[Symbol]): Symbol = {
+      if (!fromMayContain(sym)) sym
+      else {
+        var f = from
+        var t = to
+        while (f ne Nil) {
+          if (matches(f.head, sym)) return t.head
+          f = f.tail
+          t = t.tail
+        }
+        sym
+      }
+    }
     private def substFor(sym: Symbol) = subst(sym, from, to)
 
     override def apply(tp: Type): Type = (

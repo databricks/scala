@@ -2114,6 +2114,9 @@ trait Typers extends Adaptations with Tags with TypersTracking with PatternTyper
                 if (sym.isSkolem) matches(sym.deSkolemize, sym1)
                 else if (sym1.isSkolem) matches(sym, sym1.deSkolemize)
                 else super.matches(sym, sym1)
+              // Skolem de-skolemization can match symbols whose ids are not in
+              // `from`'s id-range; disable the fast-reject.
+              override def fromMayContain(sym: Symbol): Boolean = true
             }
             // allow defaults on by-name parameters
             if (sym hasFlag BYNAMEPARAM)
