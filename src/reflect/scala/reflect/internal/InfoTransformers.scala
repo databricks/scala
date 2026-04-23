@@ -47,13 +47,28 @@ trait InfoTransformers {
      *  If no such exists, the InfoTransformer with the next
      *  higher pid.
      */
-    def nextFrom(from: Phase#Id): InfoTransformer =
-      if (from == this.pid) this
-      else if (from < this.pid)
-        if (prev.pid < from) this
-        else prev.nextFrom(from)
-      else if (next.pid == NoPhase.id) next
-      else next.nextFrom(from)
+    // OPT The original formulation was recursive, but the recursive calls traverse the
+    //     `prev`/`next` links of the doubly-linked list, so the receiver object changes with
+    //     each call and `@tailrec` cannot be applied.  Rewrite as an explicit loop that
+    //     advances `cur` along the chain; this turns the method into tight field accesses
+    //     + integer compares and eliminates one stack frame per link traversed.
+    def nextFrom(from: Phase#Id): InfoTransformer = {
+      var cur: InfoTransformer = this
+      while (true) {
+        val cpid = cur.pid
+        if (from == cpid) return cur
+        else if (from < cpid) {
+          val p = cur.prev
+          if (p.pid < from) return cur
+          cur = p
+        } else {
+          val n = cur.next
+          if (n.pid == NoPhase.id) return n
+          cur = n
+        }
+      }
+      null // unreachable
+    }
   }
 }
 
