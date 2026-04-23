@@ -122,17 +122,17 @@ trait Trees extends scala.reflect.internal.Trees { self: Global =>
   class LazyTreeCopier extends super.LazyTreeCopier with TreeCopier {
     def DocDef(tree: Tree, comment: DocComment, definition: Tree) = tree match {
       case t @ DocDef(comment0, definition0)
-      if (comment0 == comment) && (definition0 == definition) => t
+      if (comment0 == comment) && (definition0 eq definition) => t
       case _ => this.treeCopy.DocDef(tree, comment, definition)
     }
     def SelectFromArray(tree: Tree, qualifier: Tree, selector: Name, erasure: Type) = tree match {
       case t @ SelectFromArray(qualifier0, selector0, _)
-      if (qualifier0 == qualifier) && (selector0 == selector) => t
+      if (qualifier0 eq qualifier) && (selector0 eq selector) => t
       case _ => this.treeCopy.SelectFromArray(tree, qualifier, selector, erasure)
     }
     def InjectDerivedValue(tree: Tree, arg: Tree) = tree match {
       case t @ InjectDerivedValue(arg0)
-      if (arg0 == arg) => t
+      if arg0 eq arg => t
       case _ => this.treeCopy.InjectDerivedValue(tree, arg)
     }
     def TypeTreeWithDeferredRefCheck(tree: Tree) = tree match {
