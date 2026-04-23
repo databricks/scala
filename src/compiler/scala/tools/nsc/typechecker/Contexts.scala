@@ -486,19 +486,18 @@ trait Contexts { self: Analyzer =>
     def make(tree: Tree = tree, owner: Symbol = owner,
              scope: Scope = scope, unit: CompilationUnit = unit,
              reporter: ContextReporter = this.reporter): Context = {
-      val isTemplateOrPackage = tree match {
-        case _: Template | _: PackageDef => true
-        case _                           => false
-      }
-      val isDefDef = tree match {
-        case _: DefDef => true
-        case _         => false
-      }
-      val isImport = tree match {
+      // OPT fuse the three independent type matches into one to reduce instanceof checks
+      // in the very hot case where `tree` is e.g. an Ident/Select/Apply.
+      var isTemplateOrPackage = false
+      var isDefDef = false
+      var isImport = false
+      tree match {
+        case _: Template | _: PackageDef => isTemplateOrPackage = true
+        case _: DefDef                   => isDefDef = true
         // The guard is for scala/bug#8403. It prevents adding imports again in the context created by
         // `Namer#createInnerNamer`
-        case _: Import if tree != this.tree => true
-        case _                              => false
+        case _: Import if tree ne this.tree => isImport = true
+        case _                           =>
       }
       val sameOwner = owner == this.owner
       val prefixInChild =
