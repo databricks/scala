@@ -831,7 +831,19 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     final def isDelambdafyFunction = isSynthetic && (name containsName tpnme.DELAMBDAFY_LAMBDA_CLASS_NAME)
     final def isDelambdafyTarget  = isArtifact && isMethod && hasAttachment[DelambdafyTarget.type]
     final def isDefinedInPackage  = effectiveOwner.isPackageClass
-    final def needsFlatClasses    = phase.flatClasses && (rawowner ne NoSymbol) && !rawowner.isPackageClass && !isMethod
+    // OPT: split so hot callers (e.g. `name`) can inline the tiny fast path - the JIT
+    //      is much more willing to inline a single `val` read + compare than the
+    //      4-branch chain that was here before.
+    //
+    //      The `Slow` path is factored into a private method but kept `@inline`-friendly
+    //      (tiny body, no try/finally, private so it compiles to an invokespecial).
+    //      JFR showed it at ~1% self, so we hoist the `rawowner` read to local and
+    //      avoid re-reading the field across the virtual `isPackageClass` call.
+    final def needsFlatClasses: Boolean = phase.flatClasses && needsFlatClassesSlow
+    private def needsFlatClassesSlow: Boolean = {
+      val ro = rawowner
+      (ro ne NoSymbol) && !ro.isPackageClass && !isMethod
+    }
 
     // TODO introduce a flag for these?
     final def isPatternTypeVariable: Boolean =
@@ -1616,8 +1628,15 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
       var infos = this.infos
       outer.assert(infos != null)
 
-      if (_validTo != NoPeriod) {
+      val vt = _validTo
+      if (vt != NoPeriod) {
         val curPeriod = outer.currentPeriod
+        // OPT Fast path: info is valid for the current period and there is no phase history
+        //     to walk.  This is the overwhelmingly common case for completed stable symbols
+        //     (e.g. AnyTpe, builtin types, classpath-loaded classes).  Short-circuiting here
+        //     avoids `phaseId` arithmetic and an unneeded `curPid < phaseId(validFrom)` comparison.
+        if ((infos.prev eq null) && vt >= curPeriod) return infos.info
+
         val curPid = outer.phaseId(curPeriod)
 
         // skip any infos that concern later phases
@@ -2864,6 +2883,10 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     override def isEarlyInitialized = this hasFlag PRESUPER
     override def isMethod           = this hasFlag METHOD
     override def isModule           = this hasFlag MODULE
+    // OPT fuse the two `hasFlag` calls of `isModule && !isMethod` into one `flags` read.
+    //     Both MODULE and METHOD participate in LateFlags so we must use the phase-adjusted
+    //     `flags`, but we still only need to compute it once.
+    override def isModuleNotMethod  = { val f = flags; (f & (MODULE | METHOD)) == MODULE }
     override def isOverloaded       = this hasFlag OVERLOADED
     /*** !!! TODO: shouldn't we do something like the following:
     override def isOverloaded       = (
