@@ -2119,7 +2119,12 @@ trait Types
       if (this eq other.asInstanceOf[AnyRef]) true
       else other match {
         case otherTypeRef: TypeRef =>
-          Objects.equals(pre, otherTypeRef.pre) && sym.eq(otherTypeRef.sym) && sameElementsEquals(args, otherTypeRef.args)
+          // Ordered by cost: sym.eq (cheap, highly discriminating) -> pre (often eq for uniqued types) -> args (may iterate)
+          (sym eq otherTypeRef.sym) && {
+            val p = pre
+            val op = otherTypeRef.pre
+            ((p eq op) || (p != null && p.equals(op))) && sameElementsEquals(args, otherTypeRef.args)
+          }
         case _ => false
       }
     }
@@ -3638,7 +3643,11 @@ trait Types
 
   // Optimization to avoid creating unnecessary new typerefs.
   def copyTypeRef(tp: Type, pre: Type, sym: Symbol, args: List[Type]): Type = tp match {
-    case TypeRef(pre0, sym0, _) if pre == pre0 && sym0.name == sym.name =>
+    // OPT short-circuit the `sym0.name == sym.name` (which calls `Symbol.name`, consulting
+    //     `needsFlatClasses`) when we can prove `sym0 eq sym`, the overwhelmingly common case
+    //     (virtually all callers pass the TypeRef's own symbol or `coevolveSym`, which usually
+    //     returns the same symbol).
+    case TypeRef(pre0, sym0, _) if ((pre eq pre0) || pre == pre0) && ((sym0 eq sym) || sym0.name == sym.name) =>
       if (sym.isAliasType && sameLength(sym.info.typeParams, args) && !sym.lockOK)
         throw new RecoverableCyclicReference(sym)
 
