@@ -112,17 +112,20 @@ private[internal] trait TypeMaps {
     def mapOver(tp: Type): Type = tp match {
       case tr @ TypeRef(pre, sym, args) =>
         val pre1 = this(pre)
-        val args1 = (
-          if (trackVariance && args.nonEmpty && !variance.isInvariant) {
+        // OPT fast path for args.isEmpty (common for monomorphic types, Int, String, ...):
+        //     avoid the `mapConserve` method call entirely.  `args eq Nil` is an
+        //     unboxed reference compare vs the virtual `List.isEmpty` call.
+        val args1 =
+          if (args eq Nil) args
+          else if (trackVariance && !variance.isInvariant) {
             val tparams = sym.typeParams
-            if (tparams.isEmpty)
+            if (tparams eq Nil)
               args mapConserve this
             else
               mapOverArgs(args, tparams)
           } else {
             args mapConserve this
           }
-        )
         if ((pre1 eq pre) && (args1 eq args)) tp
         else copyTypeRef(tp, pre1, tr.coevolveSym(pre1), args1)
       case ThisType(_) => tp
