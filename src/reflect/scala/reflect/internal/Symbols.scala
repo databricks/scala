@@ -3666,7 +3666,14 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     else {
       val syms1 = mapList(syms)(symFn)
       val map = new SubstSymMap(syms, syms1)
-      syms1.foreach(_.modifyInfo(map))
+      // OPT explicit `while` avoids the per-call `Function1` allocation that
+      //     `List.foreach(_ modifyInfo map)` would create.  Hot path during
+      //     uncurry/erasure where every method derive triggers this.
+      var s: List[Symbol] = syms1
+      while (s ne Nil) {
+        s.head.modifyInfo(map)
+        s = s.tail
+      }
       syms1
     }
   }
@@ -3683,7 +3690,13 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
    */
   def deriveSymbols2[A](syms: List[Symbol], as: List[A], symFn: (Symbol, A) => Symbol): List[Symbol] = {
     val syms1 = map2(syms, as)(symFn)
-    syms1.foreach(_.substInfo(syms, syms1))
+    // OPT see `deriveSymbols`: avoid the `Function1` allocation from
+    //     `syms1.foreach(_.substInfo(syms, syms1))` in this hot loop.
+    var s: List[Symbol] = syms1
+    while (s ne Nil) {
+      s.head.substInfo(syms, syms1)
+      s = s.tail
+    }
     syms1
   }
 

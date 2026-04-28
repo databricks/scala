@@ -298,8 +298,18 @@ private[internal] trait TypeMaps {
       else {
         // map is not the identity --> do cloning properly
         val cloned = cloneSymbols(origSyms)
-        // but we don't need to run the map again on the unchanged symbols
-        cloned.drop(firstChange).foreach(_ modifyInfo this)
+        // but we don't need to run the map again on the unchanged symbols.
+        // OPT explicit drop+while avoids the per-call `Function1` allocation
+        //     that `cloned.drop(firstChange).foreach(_ modifyInfo this)` would
+        //     create; this is on the per-`mapOver(syms)` hot path used by
+        //     PolyType / MethodType / ExistentialType rewrites.
+        var s: List[Symbol] = cloned
+        var i = 0
+        while (i < firstChange && (s ne Nil)) { s = s.tail; i += 1 }
+        while (s ne Nil) {
+          s.head.modifyInfo(this)
+          s = s.tail
+        }
         cloned
       }
     }
