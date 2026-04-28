@@ -821,6 +821,22 @@ trait Trees extends api.Trees {
     @inline private def sameTree(a: Tree, b: Tree): Boolean = a eq b
     @inline private def sameList[A <: AnyRef](a: List[A], b: List[A]): Boolean =
       (a eq b) || (a == b)
+    // OPT `vparamss: List[List[ValDef]]` compares two list-of-lists; the synthesized
+    //     `List.==` walks the outer list dispatching through `BoxesRunTime.equals` to each
+    //     inner-list `==`, which itself walks via `sameElements` again.  Doing the outer
+    //     walk in place with `sameList` per inner pair gives us the `eq`-fast-path for
+    //     each inner list individually - the common case in `LazyTreeCopier.DefDef` is
+    //     that all inner lists are reference-equal even when the outer references differ.
+    private def sameListList[A <: AnyRef](a: List[List[A]], b: List[List[A]]): Boolean = {
+      if (a eq b) return true
+      var x = a; var y = b
+      while ((x ne Nil) && (y ne Nil)) {
+        if (!sameList(x.head, y.head)) return false
+        x = x.tail
+        y = y.tail
+      }
+      (x eq Nil) && (y eq Nil)
+    }
     // OPT `Modifiers.equals` is a case-class structural equality; its `annotations:
     //     List[Tree]` field is compared via `GenSeqLike.equals -> sameElements` which
     //     walks the list element-by-element.  In tree transformers `mods` is almost
@@ -851,7 +867,7 @@ trait Trees extends api.Trees {
     def DefDef(tree: Tree, mods: Modifiers, name: Name, tparams: List[TypeDef], vparamss: List[List[ValDef]], tpt: Tree, rhs: Tree) = tree match {
       case t @ DefDef(mods0, name0, tparams0, vparamss0, tpt0, rhs0)
       if ((mods0 eq mods) || (mods0 == mods)) && (name0 eq name) && sameList(tparams0, tparams) &&
-         ((vparamss0 eq vparamss) || (vparamss0 == vparamss)) && sameTree(tpt0, tpt) && sameTree(rhs, rhs0) => t
+         sameListList(vparamss0, vparamss) && sameTree(tpt0, tpt) && sameTree(rhs, rhs0) => t
       case _ => treeCopy.DefDef(tree, mods, name, tparams, vparamss, tpt, rhs)
     }
     def TypeDef(tree: Tree, mods: Modifiers, name: Name, tparams: List[TypeDef], rhs: Tree) = tree match {
