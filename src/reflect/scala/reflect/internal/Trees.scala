@@ -1124,6 +1124,27 @@ trait Trees extends api.Trees {
       else Modifiers(flags, privateWithin, newAnns) setPositions positions
     }
 
+    // OPT Override the auto-generated case-class equals to short-circuit `privateWithin` and
+    //     `annotations` field compares with `eq` checks before the boxed `==`.  Both fields
+    //     are AnyRef:
+    //      - `privateWithin: Name` is interned and always reference-equal between equal mods
+    //        from the same compiler run, but the synthesized `==` still routes through
+    //        `BoxesRunTime.equals` (null check + `instanceof Number` + virtual `equals`).
+    //      - `annotations: List[Tree]` is overwhelmingly `Nil` (the singleton) in `LazyTreeCopier`
+    //        comparisons; even when non-empty, the new and the original are typically the
+    //        same reference because `transformModifiers` returns `this` for empty annotations
+    //        and `mapAnnotations` returns `this` when the mapped list is `==` to the original.
+    //     JFR showed `Modifiers.equals -> sameElements` accumulating ~0.3% via
+    //     `LazyTreeCopier.{ValDef,DefDef}` despite the outer `eq mods` short-circuit; this
+    //     keeps the hot non-eq path off `BoxesRunTime` for the AnyRef fields.
+    override def equals(other: Any): Boolean = (this.asInstanceOf[AnyRef] eq other.asInstanceOf[AnyRef]) || (other match {
+      case that: Modifiers =>
+        flags == that.flags &&
+        ((privateWithin eq that.privateWithin) || privateWithin == that.privateWithin) &&
+        ((annotations eq that.annotations) || annotations == that.annotations)
+      case _ => false
+    })
+
     override def toString = "Modifiers(%s, %s, %s)".format(flagString, annotations mkString ", ", positions)
   }
 
