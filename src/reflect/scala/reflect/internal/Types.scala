@@ -117,6 +117,33 @@ trait Types
     } else new SubstTypeMap(from, to)
   }
 
+  /** Companion to `substTypeMapCache` for `SubstSymMap`.  Allocation profiles show
+   *  ~1.84 GB / run of `SubstSymMap` instances coming overwhelmingly from `Type.substSym`
+   *  callers (asSeenFrom-like rewrites, `matchesQuantified`, `mapOver` of MethodType /
+   *  PolyType / ExistentialType).  Adjacent calls almost always reuse the same `from`
+   *  / `to` lists (e.g. inside a single subtyping comparison), so the same single-slot
+   *  cache pattern as `SubstTypeMap` reuses the map across them.
+   *
+   *  The cache holds `cachedFrom` and `cachedTo` separately rather than reading them
+   *  off the cached map because `SubstSymMap`'s ctor params aren't `val`.  Substitution
+   *  is internally stateless (`SubstMap` is `trackVariance = false`), so reusing the
+   *  same instance across a re-entry with the same `(from, to)` is safe.
+   */
+  private object substSymMapCache {
+    private[this] var cachedFrom: List[Symbol] = Nil
+    private[this] var cachedTo: List[Symbol] = Nil
+    private[this] var cached: SubstSymMap = new SubstSymMap(Nil, Nil)
+
+    def apply(from: List[Symbol], to: List[Symbol]): SubstSymMap = if (isCompilerUniverse) {
+      if ((cachedFrom ne from) || (cachedTo ne to)) {
+        cached = new SubstSymMap(from, to)
+        cachedFrom = from
+        cachedTo = to
+      }
+      cached
+    } else new SubstSymMap(from, to)
+  }
+
   /** The current skolemization level, needed for the algorithms
    *  in isSameType, isSubType that do constraint solving under a prefix.
    */
@@ -754,9 +781,14 @@ trait Types
     // OPT `from eq Nil` is an unboxed reference compare vs the virtual `List.isEmpty`.
     //     `substSym` is on a very hot compiler path (asSeenFrom / cloneInfo / memberType),
     //     and elides the short-lived `SubstSymMap` allocation when there's nothing to do.
+    //
+    // OPT route through `substSymMapCache` so adjacent calls with the same `(from, to)`
+    //     reuse a single `SubstSymMap` rather than allocating a fresh one each time.
+    //     Mirrors the `subst` cache; allocation profiles showed `Type.substSym` as the
+    //     dominant `SubstSymMap` allocator (~1 GB / run on the bench corpus).
     def substSym(from: List[Symbol], to: List[Symbol]): Type =
       if ((from eq to) || (from eq Nil)) this
-      else new SubstSymMap(from, to) apply this
+      else substSymMapCache(from, to) apply this
 
     /** Substitute all occurrences of `ThisType(from)` in this type by `to`.
      *
