@@ -101,13 +101,23 @@ abstract class BTypesFromSymbols[G <: Global](val global: G) extends BTypes {
     else if (classSym == NullClass) srNullRef
     else {
       val internalName = classSym.javaBinaryNameString
-      // The new ClassBType is added to the map via its apply, before we set its info. This
-      // allows initializing cyclic dependencies, see the comment on variable ClassBType._info.
-      ClassBType(internalName, fromSymbol = true) { res:ClassBType =>
-        if (completeSilentlyAndCheckErroneous(classSym))
-          Left(NoClassBTypeInfoClassSymbolInfoFailedSI9111(classSym.fullName))
-        else computeClassInfo(classSym, res)
-      }
+      // OPT consult the cache before constructing the init lambda.  The lambda
+      //     captures `classSym` and `this`, so it's allocated unconditionally at
+      //     the call site even when `ClassBType.apply` would have returned the
+      //     cached value.  JFR's allocation profile attributed ~340 MB / bench
+      //     run to this Function1 (BTypesFromSymbols$$Lambda$3090) -- the cache
+      //     hit rate during code-gen is very high (every method call/genCallMethod
+      //     re-resolves the receiver class), so this is mostly waste.
+      val cached = classBTypeCache.get(internalName)
+      if (cached ne null) cached
+      else
+        // The new ClassBType is added to the map via its apply, before we set its info. This
+        // allows initializing cyclic dependencies, see the comment on variable ClassBType._info.
+        ClassBType(internalName, fromSymbol = true) { res:ClassBType =>
+          if (completeSilentlyAndCheckErroneous(classSym))
+            Left(NoClassBTypeInfoClassSymbolInfoFailedSI9111(classSym.fullName))
+          else computeClassInfo(classSym, res)
+        }
     }
   }
 
@@ -184,8 +194,16 @@ abstract class BTypesFromSymbols[G <: Global](val global: G) extends BTypes {
      * The `primitiveTypeMap` maps those class symbols to the corresponding PrimitiveBType.
      */
     def primitiveOrClassToBType(sym: Symbol): BType = {
+      // OPT avoid the by-name `classBTypeFromSymbol(sym)` closure that
+      //     `Map.getOrElse` requires (~261 MB / bench run captured in JFR as
+      //     BTypesFromSymbols$$Lambda$3122).  This is on the typeToBType /
+      //     methodBTypeFromMethodType hot path, called for every parameter and
+      //     return type during code-gen; the by-name closure is allocated even
+      //     when the Map lookup misses (the common case for non-primitive types).
       assertClassNotArray(sym)
-      primitiveTypeToBType.getOrElse(sym, classBTypeFromSymbol(sym))
+      val cached = primitiveTypeToBType.get(sym)
+      if (cached.isDefined) cached.get
+      else classBTypeFromSymbol(sym)
     }
 
     /**
