@@ -4516,10 +4516,24 @@ trait Types
       var bounds = mapList(tparams)(instantiatedBound)
       bounds = adaptBoundsToAnnotations(bounds, tparams, targs)
       (bounds corresponds targs)(_ containsType _)
-    } else
-      (tparams corresponds targs){ (tparam, targ) =>
-        instantiatedBound(tparam) containsType targ
+    } else {
+      // OPT inline `corresponds` as an explicit `while` over the parallel lists.
+      //     The original `(tparams corresponds targs)((tparam, targ) => ...)` allocated
+      //     a Function2 closure (~153 MB / bench run captured in JFR) that closed over
+      //     `pre, owner, tparams, targs` -- this is on a hot type-application validation
+      //     path called from `Implicits.checkBounds`, `Typer.typedAppliedTypeTree`, etc.
+      //     The hand-rolled loop calls the `instantiatedBound` local-def directly (no
+      //     Function1 wrapping needed when called by name) and short-circuits on first
+      //     failure exactly like `corresponds`.
+      var ts1 = tparams
+      var ts2 = targs
+      while ((ts1 ne Nil) && (ts2 ne Nil)) {
+        if (!(instantiatedBound(ts1.head) containsType ts2.head)) return false
+        ts1 = ts1.tail
+        ts2 = ts2.tail
       }
+      (ts1 eq Nil) && (ts2 eq Nil)
+    }
   }
 
   def elimAnonymousClass(t: Type) = t match {

@@ -2403,11 +2403,25 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
      *
      *  @param baseClass is a base class of this symbol's owner.
      */
-    final def overriddenSymbol(baseClass: Symbol): Symbol = (
+    final def overriddenSymbol(baseClass: Symbol): Symbol = {
       // concrete always overrides abstract, so don't let an abstract definition
       // claim to be overriding an inherited concrete one.
-      matchingInheritedSymbolIn(baseClass) filter (res => res.isDeferred || !this.isDeferred)
-    )
+      // OPT avoid the per-call `Function1` allocation that the original
+      //     `filter (res => res.isDeferred || !this.isDeferred)` produced (~351 MB / run
+      //     in JFR's allocation profile).  Two cheap fast paths cover the bulk of
+      //     callers:
+      //       - candidate is `NoSymbol` (no inherited match exists -- the dominant case)
+      //       - this is concrete: the predicate would always be true and `filter` would
+      //         return the candidate unchanged, so we can skip the call entirely.
+      //     The slow path (overloaded candidate of a deferred symbol) keeps the original
+      //     filter behaviour but with a simpler lambda body.
+      val candidate = matchingInheritedSymbolIn(baseClass)
+      if (candidate eq NoSymbol) NoSymbol
+      else if (!this.isDeferred) candidate
+      else if (candidate.isOverloaded) candidate filter (_.isDeferred)
+      else if (candidate.isDeferred) candidate
+      else NoSymbol
+    }
 
     private def matchingInheritedSymbolIn(baseClass: Symbol): Symbol =
       if (canMatchInheritedSymbols) matchingSymbol(baseClass, owner.thisType) else NoSymbol
