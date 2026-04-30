@@ -176,7 +176,23 @@ class BatchSourceFile(val file : AbstractFile, content0: Array[Char]) extends So
     def calculateLineIndices(cs: Array[Char]) = {
       val buf = new ArrayBuffer[Int]
       buf += 0
-      for (i <- 0 until cs.length) if (isAtEndOfLine(i)) buf += i + 1
+      // OPT inline `isAtEndOfLine`: the original `for (i <- 0 until cs.length)` desugars
+      //     to `Range.foreach(i => ...)` which boxes every Int (~1.5 GB / bench run via
+      //     `BoxesRunTime.boxToInteger`).  `isAtEndOfLine` itself allocates a fresh
+      //     PartialFunction[Char,Boolean] per call (`{ case CR | LF => true; case _ => false }`)
+      //     and re-reads `content(idx)` twice through `charAtIsEOL`.  The hand-rolled
+      //     `while` reads the local `cs` array once per index and tests the two relevant
+      //     line-break chars directly, with the CR-before-LF guard inlined verbatim from
+      //     `notCRLF0` (so behaviour is identical: a CR immediately followed by LF is
+      //     not counted as a line break).
+      val n = cs.length
+      var i = 0
+      while (i < n) {
+        val ch = cs(i)
+        if (ch == LF || (ch == CR && (i + 1 >= n || cs(i + 1) != LF)))
+          buf += i + 1
+        i += 1
+      }
       buf += cs.length // sentinel, so that findLine below works smoother
       buf.toArray
     }
