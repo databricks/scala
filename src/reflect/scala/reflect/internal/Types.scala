@@ -4282,13 +4282,30 @@ trait Types
     case _                  => false
   }
 
+  // OPT explicit `while` over `corresponds3 + isSubArg` lambda.  Allocation
+  //     profiles attribute ~336 MB / bench run to the closure that the original
+  //     `corresponds3(tps1, tps2, tparams)(isSubArg)` produces (the inner `isSubArg`
+  //     captures `depth`).  This is a well-trodden subtyping path -- every type
+  //     application comparison ends up here -- so eliminating the per-call lambda
+  //     plus the tail-recursive method dispatch tightens the inner loop.  Behaviour
+  //     is identical: same short-circuiting on length mismatch, same per-element
+  //     variance test, and the cheap-first `tparam.isCovariant || isSubType(t2, t1)`
+  //     ordering noted in scala/bug#8478 is preserved.
   def isSubArgs(tps1: List[Type], tps2: List[Type], tparams: List[Symbol], depth: Depth): Boolean = {
-    def isSubArg(t1: Type, t2: Type, tparam: Symbol) = (
-         (tparam.isCovariant || isSubType(t2, t1, depth))     // The order of these two checks can be material for performance (scala/bug#8478)
-      && (tparam.isContravariant || isSubType(t1, t2, depth))
-    )
-
-    corresponds3(tps1, tps2, tparams)(isSubArg)
+    var ts1 = tps1
+    var ts2 = tps2
+    var tps = tparams
+    while ((ts1 ne Nil) && (ts2 ne Nil) && (tps ne Nil)) {
+      val tparam = tps.head
+      val t1 = ts1.head
+      val t2 = ts2.head
+      if (!((tparam.isCovariant || isSubType(t2, t1, depth)) &&
+            (tparam.isContravariant || isSubType(t1, t2, depth)))) return false
+      ts1 = ts1.tail
+      ts2 = ts2.tail
+      tps = tps.tail
+    }
+    (ts1 eq Nil) && (ts2 eq Nil) && (tps eq Nil)
   }
 
   def specializesSym(tp: Type, sym: Symbol, depth: Depth): Boolean = {
