@@ -116,8 +116,18 @@ trait CompilationUnits { global: Global =>
         debuglog(s"removing synthetic $sym from $self")
         map -= sym
       }
-      def get(sym: Symbol): Option[Tree] = debuglogResultIf[Option[Tree]](s"found synthetic for $sym in $self", _.isDefined) {
-        map get sym
+      // OPT JFR's allocation profile attributed ~435 MB / bench run to the per-call
+      //     Function0 closure that the by-name `msg: => String` in `debuglogResultIf`
+      //     produced (and the `_.isDefined` Function1).  `synthetics.get` is called
+      //     for every member symbol in scope from `Typers.typedStats`, but the result
+      //     is `None` for the overwhelming majority of those.  Inlining the body so
+      //     the closure is only constructed when there's actually a synthetic to log
+      //     keeps the hot path allocation-free without changing the public behaviour.
+      def get(sym: Symbol): Option[Tree] = {
+        val result = map get sym
+        if (result.isDefined)
+          debuglog(s"found synthetic for $sym in $self: ${result.get}")
+        result
       }
       def keys: Iterable[Symbol] = map.keys
       def clear(): Unit = map.clear()

@@ -28,32 +28,54 @@ abstract class ConstantFolder {
   val global: Global
   import global._
 
+  // OPT inline `fold` directly into the two `apply` methods.  `fold` previously
+  //     received its computation through a `compX: => Constant` by-name parameter,
+  //     which forced the compiler to allocate a fresh `Function0` at every call site
+  //     just to defer evaluation past the `try`.  JFR's allocation profile showed
+  //     ConstantFolder.apply as a top lambda allocator (~149 MB / bench run for the
+  //     by-name closures alone).  Inlining lets the body live directly inside the
+  //     try, eliminating the closure entirely with no behavioural change -- the
+  //     try/catch still catches `ArithmeticException` from the same expression.
+
   /** If tree is a constant operation, replace with result. */
-  def apply(tree: Tree, site: Symbol): Tree = fold(tree, tree match {
-    case Apply(Select(Literal(x), op), List(Literal(y))) => foldBinop(op, x, y)
-    case Select(Literal(x), op) => foldUnop(op, x)
-    case _ => null
-  }, site)
+  def apply(tree: Tree, site: Symbol): Tree = {
+    val x: Constant =
+      try {
+        tree match {
+          case Apply(Select(Literal(x0), op), List(Literal(y))) => foldBinop(op, x0, y)
+          case Select(Literal(x0), op)                          => foldUnop(op, x0)
+          case _                                                => null
+        }
+      } catch {
+        case e: ArithmeticException =>
+          if (settings.warnConstant)
+            runReporting.warning(tree.pos, s"Evaluation of a constant expression results in an arithmetic error: ${e.getMessage}", WarningCategory.LintConstant, site)
+          null
+      }
+    if ((x ne null) && x.tag != UnitTag) tree setType ConstantType(x)
+    else tree
+  }
 
   /** If tree is a constant value that can be converted to type `pt`, perform
    *  the conversion.
    */
-  def apply(tree: Tree, pt: Type, site: Symbol): Tree = fold(apply(tree, site), tree.tpe match {
-    case ConstantType(x) => x convertTo pt
-    case _ => null
-  }, site)
-
-  private def fold(tree: Tree, compX: => Constant, site: Symbol): Tree =
-    try {
-      val x = compX
-      if ((x ne null) && x.tag != UnitTag) tree setType ConstantType(x)
-      else tree
-    } catch {
-      case e: ArithmeticException =>
-        if (settings.warnConstant)
-          runReporting.warning(tree.pos, s"Evaluation of a constant expression results in an arithmetic error: ${e.getMessage}", WarningCategory.LintConstant, site)
-        tree
-    }
+  def apply(tree: Tree, pt: Type, site: Symbol): Tree = {
+    val folded = apply(tree, site)
+    val x: Constant =
+      try {
+        tree.tpe match {
+          case ConstantType(c) => c convertTo pt
+          case _               => null
+        }
+      } catch {
+        case e: ArithmeticException =>
+          if (settings.warnConstant)
+            runReporting.warning(folded.pos, s"Evaluation of a constant expression results in an arithmetic error: ${e.getMessage}", WarningCategory.LintConstant, site)
+          null
+      }
+    if ((x ne null) && x.tag != UnitTag) folded setType ConstantType(x)
+    else folded
+  }
 
   private def foldUnop(op: Name, x: Constant): Constant = (op, x.tag) match {
     case (nme.UNARY_!, BooleanTag) => Constant(!x.booleanValue)
