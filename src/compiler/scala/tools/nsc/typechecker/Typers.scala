@@ -2062,7 +2062,16 @@ trait Typers extends Adaptations with Tags with TypersTracking with PatternTyper
      *  This simultaneously allows us to reify annotations and to preserve backward compatibility.
      */
     def typedModifiers(mods: Modifiers): Modifiers =
-      mods.copy(annotations = Nil) setPositions mods.positions
+      // OPT skip the copy when there are no annotations to drop -- the result
+      //     would be structurally identical to `mods` (same flags, same
+      //     privateWithin, same annotations, and `setPositions` would just
+      //     restore `mods.positions`).  `Modifiers` is a case class so `.copy`
+      //     allocates a fresh instance unconditionally, which JFR attributed
+      //     ~233 MB / bench run to (Trees$Modifiers).  Most members have no
+      //     annotations attached on the parse tree, so this hot ValDef /
+      //     DefDef / ClassDef / ModuleDef / TypeDef path skips an allocation.
+      if (mods.annotations eq Nil) mods
+      else mods.copy(annotations = Nil) setPositions mods.positions
 
     def typedValDef(vdef: ValDef): ValDef = {
       val sym = vdef.symbol
