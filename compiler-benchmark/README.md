@@ -468,6 +468,92 @@ only one column is a useful signal:
   final` wasn't applied to a trait method.
 - `scala.runtime.BoxesRunTime.equalsNumObject` appearing for a Tree/Symbol
   comparison is a red flag — see §7.
+- `Trees$$Lambda$NNNN/0xHEX` (or any `*$$Lambda$...`) frames in
+  *allocation* dumps are the JIT-generated implementation classes for
+  `Function0/1/2`. Their owning source frame is the *next* one above
+  in the stack — `find-jfr-alloc-callers.py` finds it for you (see
+  "Allocation profiling" below).
+
+### Allocation profiling
+
+Execution sampling shows where the JVM spends CPU; **allocation
+sampling** shows where it spends GC time and where escape analysis is
+failing. Both are needed: most of the round-2 optimizations (§10.2)
+came from allocation-only signals — per-call lambda allocations on hot
+paths that didn't surface as obvious self/inclusive hotspots in
+execution samples but appeared as multi-hundred-MB entries in the
+allocation dump.
+
+JDK 16+ has a low-overhead `ObjectAllocationSample` event that's
+enabled by `settings=profile` (the same setting that enables
+`ExecutionSample`). One recording captures both:
+
+```bash
+$PREFIX java \
+  -XX:+FlightRecorder \
+  -XX:FlightRecorderOptions=stackdepth=128 \
+  -XX:StartFlightRecording=filename=/tmp/run.jfr,settings=profile \
+  -Xms2g -Xmx2g -XX:+UseParallelGC \
+  -cp "$CP" benchmark.CompilerBench "$SRC_LIST" "$COMPILE_CP" "$OUT" 3 10
+```
+
+`run-bench.sh` accepts these flags via `EXTRA_JVM_OPTS`:
+
+```bash
+EXTRA_JVM_OPTS="-XX:+FlightRecorder \
+  -XX:FlightRecorderOptions=stackdepth=128 \
+  -XX:StartFlightRecording=filename=/tmp/run.jfr,settings=profile" \
+TASKSET=0 bash compiler-benchmark/run-bench.sh build/pack 3 10 prof
+```
+
+Dump and aggregate the allocation events:
+
+```bash
+jfr print --events jdk.ObjectAllocationSample --stack-depth 128 \
+  /tmp/run.jfr > /tmp/alloc.txt
+python3 compiler-benchmark/parse-jfr-alloc.py /tmp/alloc.txt
+```
+
+The output has two tables:
+
+- **By `objectClass`** — which type was allocated. Useful to spot
+  fundamental data-structure pressure (`$colon$colon`,
+  `Types$ClassArgsTypeRef`, `Symbols$TypeHistory`, etc.).
+- **By top frame** — where the allocation occurred. `*$$Lambda$NNNN/0xHEX`
+  frames are the JIT-generated `Function0/1/2` impls; their owning
+  source frame is one frame above (use `find-jfr-alloc-callers.py`).
+
+Once a hotspot is identified, drill into callers:
+
+```bash
+# Who's calling the WeakHashSet.findEntry allocation site?
+python3 compiler-benchmark/find-jfr-alloc-callers.py /tmp/alloc.txt \
+  "WeakHashSet.findEntry" 1
+# `depth` of 2..3 peels through `<init>` chains or thin wrappers
+# (e.g. a Function1.apply forwarder).
+```
+
+For execution samples the symmetric tool is `find-jfr-callers.py`
+(top callers of a sampled method); use it when `parse-jfr.py` shows a
+hot leaf concentrated in a single frame and you want to know which of
+the dozens of call sites is responsible (e.g. `mapConserve.loop$1`).
+
+#### How allocation pressure relates to wall time
+
+Allocation rate isn't the same as wall time, but the correspondence
+is real on this workload:
+
+- The compiler runs with `-XX:+UseParallelGC -Xms2g -Xmx2g`, which
+  makes minor GCs cheap. Killing 200-500 MB of allocations per bench
+  run typically buys 0.3-1.0% wall improvement, mostly from reduced
+  eden churn.
+- Per-call `Function1`/`Function0` allocations on the type-map and
+  tree-transformer hot paths are the easiest wins: a single closure
+  removal often translates into a hot-loop body shape the JIT inlines
+  more aggressively, helping wall time beyond the GC saving.
+- Allocation cuts that *don't* show up in wall time are the warning
+  sign covered in §8 ("when source-level lambda elimination doesn't
+  help").
 
 ## 7. Scala-2.12 performance traps (the hard-won ones)
 
@@ -581,22 +667,168 @@ overridden `unapply` the generated code can call `unapply` and allocate an
 fix is to replace the pattern match with direct `isInstanceOf` +
 field access, or arrange for the case class to be concrete.
 
+### By-name parameters allocate Function0
+
+Each call to a method that takes a by-name (`=> A`) parameter wraps the
+argument expression in a fresh `Function0` instance — even when the
+parameter ends up unused at runtime. Three common offenders:
+
+- `Map.getOrElse(k, default)` — `default` is by-name; on a cache hit
+  the closure was allocated for nothing.
+- `xs.fold(zero)(op)` and similar — `zero` is by-name in some
+  signatures (e.g. `ConstantFolder.fold`).
+- `debuglog(msg)` / `debuglogResultIf(msg) { ... }` — the message is
+  by-name, and the `Function0` is allocated *before* the level check
+  short-circuits.
+
+Mitigations:
+
+```scala
+// Before -- closure allocated unconditionally:
+map.getOrElse(k, classBTypeFromSymbol(sym))
+
+// After -- check the cache first; only fall back when missing:
+val cached = map.get(k)
+if (cached.isDefined) cached.get
+else classBTypeFromSymbol(sym)
+```
+
+Symmetrically for `debuglog`-style sites:
+
+```scala
+// Before -- the s"..." interpolation runs and Function0 allocates
+//           even when isDebug is false:
+debuglog(s"adding synthetic ${sym.fullLocationString}")
+
+// After:
+if (isDebug) debuglog(s"adding synthetic ${sym.fullLocationString}")
+```
+
+These trace cleanly in `parse-jfr-alloc.py`'s output as
+`*$$Lambda$NNNN/0xHEX` entries owned by the call site.
+
+### Eager init lambdas in cache constructors
+
+A common idiom in the backend looks like:
+
+```scala
+// ClassBType.apply caches by name; the trailing { res => ... }
+// init lambda only runs when the cache misses.
+ClassBType(internalName, fromSymbol = true) { res =>
+  if (completeSilentlyAndCheckErroneous(classSym))
+    Left(NoClassBTypeInfoClassSymbolInfoFailedSI9111(classSym.fullName))
+  else computeClassInfo(classSym, res)
+}
+```
+
+The closure captures `classSym` and `this`, so it's instantiated at the
+call site **on every call** — including cache hits. In a code-gen hot
+path (`classBTypeFromSymbol`) the cache hit rate is very high, so the
+lambda allocation is mostly waste (~340 MB / bench run in our profile).
+
+Fix: pre-check the cache and only construct the lambda on miss:
+
+```scala
+val cached = classBTypeCache.get(internalName)
+if (cached ne null) cached
+else
+  ClassBType(internalName, fromSymbol = true) { res => ... }
+```
+
+This is the same pattern as the by-name parameter trap above; the
+difference is that here the closure is *intentional* (cache constructor
+argument), but its cost-of-allocation profile is the same.
+
+### `case class .copy` on no-op changes
+
+`case class Modifiers(...)` provides an autogenerated `.copy` that
+allocates a fresh instance unconditionally, even when every "changed"
+argument is structurally equal to the existing field. Hot example:
+
+```scala
+// Before -- allocates a new Modifiers even when annotations is already Nil:
+def typedModifiers(mods: Modifiers): Modifiers =
+  mods.copy(annotations = Nil) setPositions mods.positions
+
+// After:
+def typedModifiers(mods: Modifiers): Modifiers =
+  if (mods.annotations eq Nil) mods
+  else mods.copy(annotations = Nil) setPositions mods.positions
+```
+
+The most common source members carry no annotations on the parse tree,
+so the guarded version skips an allocation in the bulk of typer
+ValDef/DefDef/ClassDef/ModuleDef/TypeDef calls (~233 MB / bench run).
+
+### `for (i <- 0 until n) ...` boxes Int through PartialFunction
+
+```scala
+for (i <- 0 until length if isAtEndOfLine(i)) buf += i + 1
+```
+
+desugars to a `withFilter` + `foreach` chain that goes through
+`RangeIterator.next` (returning boxed `Integer`) and a `PartialFunction`,
+**not** the specialized `Int` fast-path of `Range.foreach`. In
+`BatchSourceFile.lineIndices` this contributed ~1.5 GB of `Integer`
+allocations per bench run. The standard fix is the explicit `while`
+loop with the predicate inlined:
+
+```scala
+val buf = ListBuffer.empty[Int]
+buf += 0
+var i = 0
+while (i < length) {
+  val ch = content(i)
+  if (ch == CR || ch == LF || ch == FF) {
+    if (ch == CR && i + 1 < length && content(i + 1) == LF) i += 1
+    buf += i + 1
+  }
+  i += 1
+}
+```
+
+### Caching map instances on hot paths
+
+`AsSeenFromMap` and `SubstSymMap` are immutable after construction and
+are heavily allocated on the type-substitution hot path (`Type.substSym`
+allocated ~1.8 GB / bench run before optimization). A 1-slot cache
+(`var lastFrom; var lastTo; var lastMap`) keyed on the from/to
+list pair covers the bulk of repeated calls — the same pair is reused
+for a whole class's worth of substitution under a single owner change.
+
+We tried a 2-slot LRU and it regressed: the second slot's check +
+bookkeeping cost more than the extra hit-rate gained. **More slots
+aren't always better; benchmark the actual distribution before
+adding capacity.**
+
 ## 8. The optimization loop
 
 The rhythm that worked for us:
 
-1. **Profile** a fresh run: `TASKSET=0 ... -XX:StartFlightRecording=...`.
-2. **Identify** the top 2-3 self-time and top 2-3 inclusive-time methods;
-   pick the one with the clearest fix.
+1. **Profile** a fresh run with `settings=profile` so you get *both*
+   `ExecutionSample` and `ObjectAllocationSample` events
+   (`TASKSET=0 ... -XX:StartFlightRecording=...`; see §6).
+2. **Identify** the top 2-3 self-time and top 2-3 inclusive-time methods
+   in `parse-jfr.py`; **and** the top objectClass/top-frame entries in
+   `parse-jfr-alloc.py` (§6 "Allocation profiling"). Round 2 of our
+   work (§10.2) was driven mostly by the allocation table — many
+   wins didn't surface as obvious self/inclusive hotspots.
 3. **Make one small change**. Really one. Bundling made bisection painful
-   later.
-4. **Build**: `sbt 'dist/mkQuick'`.
+   later. The two profiling tables often suggest different fixes; pick
+   one and follow it through, don't combine.
+4. **Build**: `sbt 'dist/mkQuick'` for compile-only changes;
+   `sbt 'dist/mkPack'` if you'll feed `build/pack` to `compare.sh`
+   (the latter rebuilds the JARs that `run-bench.sh` consumes; the
+   former leaves `build/pack/lib/*.jar` stale).
 5. **Bytecode identity**: `diff -r libout-sanity-base libout-sanity-new | wc -l`.
 6. **MiMa** (if library/reflect changed).
 7. **JUnit core suite** (`sbt junit/test`) if anything non-trivial.
 8. **Benchmark**: `bash compare.sh 5 3 10` first; if it looks like a real
-   win, confirm with `compare.sh 8 3 15`.
-9. **Commit** with JFR numbers in the message.
+   win, confirm with `compare.sh 8 3 15`. Read all three of the new
+   compare.sh tables (§9): the median can land on noise where
+   `wall_total_ms` (lowest CV per §13) shows the real signal.
+9. **Commit** with JFR numbers in the message — both wall delta and
+   the allocation impact in MB / bench run if applicable.
 10. **Re-profile every 2-3 rounds** — the hotspot landscape shifts faster
     than you'd expect. Methods you didn't touch can *grow* in percentage
     because they held constant while others shrank.
@@ -604,6 +836,56 @@ The rhythm that worked for us:
     `run jvm specialized` before merging. See §5 for the rationale — I
     skipped this early and it's the one correctness gap I'd flag for
     next time.
+
+### When source-level lambda elimination doesn't help
+
+Several round-2 attempts looked great on paper — a 200-500 MB lambda
+entry in `parse-jfr-alloc.py`, an obvious `foreach`/by-name closure to
+remove — and then regressed in `compare.sh`:
+
+| Site                                                   | Approach                                        | Result    |
+| ------------------------------------------------------ | ----------------------------------------------- | --------- |
+| `Typers.addSynthetics` for-comprehension               | Manual `Option` checks + early `isEmpty` return | ~ -1%     |
+| `AsSeenFromMap.correspondingTypeArgument` `indexWhere` | Hand-rolled `while` loop                        | ~ -0.4%   |
+| `Scopes.lookupEntry` `phase.flatClasses` re-read       | New cached `nameWhenFlat` accessor              | ~ -0.8%   |
+| `Infer.checkAccessible` `Symbol.filter`                | Inlined filter into call site                   | regression|
+| `Infer.isCompatibleArgs` `corresponds`                 | Inlined as `while` loop                         | regression|
+| `Symbols.cloneSymbolsAndModify` `foreach`              | Hand-rolled `while` over `foreach`              | regression|
+| `Trees.itransform` `atOwner` calls                     | Inlined owner-management state                  | StackOverflowError |
+
+The pattern is: the JIT's escape analysis was already eliminating these
+allocations in steady state, or making them effectively free via TLAB
+bump-pointer + young-gen reclaim. Removing them at source level adds
+branches/instructions on the hot path that the JIT can no longer fold
+away. **Allocation samples are a flag that something worth investigating
+exists — they are not a guarantee that hand-elimination will help.**
+
+Practical filter for "is this lambda likely to benefit from
+elimination?":
+
+1. **Does the closure escape its caller?** Closures stored in fields
+   (`SubstSymMap`'s `from`/`to`) or returned from methods can't be
+   escape-analyzed; they're real allocations. Closures consumed
+   inline (e.g. `Map.getOrElse`'s by-name) often *can* be EA-eliminated.
+2. **Is the call site polymorphic / megamorphic?** Polymorphic call
+   sites confuse EA more often than monomorphic ones. If
+   `parse-jfr.py` shows the caller as a hot dispatcher with many
+   targets (`Trees$Transformer.transform`), EA is less likely to
+   handle the closure cleanly.
+3. **Is there state to manage?** `atOwner`, `localTyper.context.make`,
+   etc. carry critical side effects. Manually inlining such helpers
+   risks subtle owner-tracking bugs (we hit a `StackOverflowError`
+   trying to inline `atOwner` in `Trees.itransform`); do it only when
+   the helper has no side effects beyond returning a value.
+4. **Did `compare.sh` actually move?** Always benchmark; revert
+   anything that regresses or is a no-op at >5 runs. The cost of a
+   failed-but-reverted attempt is one bench cycle (~10 min); the cost
+   of an unreverted regression is the next round's "where did this
+   200 ms come from" search.
+
+Same caveat applies to "obvious" `if (x.isEmpty) return ...` early
+returns: the `for`/`foreach` body can be cheaper than the dispatch +
+branch on `isEmpty` when the typical case is non-empty.
 
 ### Absolute vs relative deltas
 
@@ -637,6 +919,9 @@ is gitignored.
 | `perf-walk.sh`                    | Walks pairs of (parent, child) commits with interleaved benchmark runs and `perf stat`.  Used by §13.              |
 | `perf-walk-analyze.py`            | Aggregates `perf-walk.sh` raw `runs.tsv` into per-pair deltas, CVs, and correlations.                              |
 | `parse-jfr.py`                    | Aggregates `jdk.ExecutionSample` JFR text dumps into self/total method tables.  See §6.                            |
+| `parse-jfr-alloc.py`              | Aggregates `jdk.ObjectAllocationSample` JFR text dumps by `objectClass` and by top frame.  See §6 "Allocation profiling". |
+| `find-jfr-callers.py`             | Tracks the top callers of a sampled method in an `ExecutionSample` dump.  Use to peel back from a hot leaf to its hot caller. |
+| `find-jfr-alloc-callers.py`       | Like `find-jfr-callers.py` but for `ObjectAllocationSample` dumps.  Maps lambda-allocation entries back to their owning source frame. |
 | `commits.txt`                     | Default commit list for `build-commits.sh` and `perf-walk.sh` (the 16 optimization commits + their parent).        |
 | `baseline-lib-srcs.txt`           | The 705-file frozen source list `run-bench.sh` defaults to; described in §3.                                       |
 | `lib-srcs.txt`                    | Re-derivable source list (kept around so we can diff against the frozen one).                                      |
@@ -665,10 +950,13 @@ scalac -d sandbox/bench/out \
 Recompile after any edit to `CompilerBench.scala` (e.g. when toggling
 features in §13).
 
-## 10. Results summary from the 2026-04 round
+## 10. Results summaries
 
-For reference, the order of wins from the optimization series that produced
-this doc (all cumulative, ordered by commit date):
+### 10.1 Round 1 — 2026-04
+
+The first optimization series, captured in commits
+`78c2d0d597..4724f924a4` and primarily driven by **execution-sample**
+profiling:
 
 | Change                                           | Inclusive JFR impact        |
 | ------------------------------------------------ | --------------------------- |
@@ -692,16 +980,178 @@ this doc (all cumulative, ordered by commit date):
 Cumulative: ~3.3% / ~280-330 ms faster median per full library-compile on
 our 8×15-iter benchmark (optimized median 8286.5 ms vs baseline 8568.0 ms).
 
-**Correctness at HEAD of the branch:**
+### 10.2 Round 2 — 2026-05
+
+Round 2 (commits `de101cbee5..24f32e17ba`, on top of round 1) added
+**allocation profiling** to the loop (§6 "Allocation profiling") and
+was driven primarily by `parse-jfr-alloc.py`.
+
+#### Harness changes carried in this round
+
+A few small ergonomic additions to the existing scripts; nothing that
+requires re-running prior round-1 numbers but worth knowing about for
+the next round:
+
+- `run-bench.sh` accepts `EXTRA_JVM_OPTS=...` to inject ad-hoc JVM
+  flags before `-cp`. Used to plumb the JFR `+FlightRecorder` /
+  `StartFlightRecording` flags through unchanged (§6).
+- `compare.sh` now takes `BASE` / `NEW` env vars (defaulted to the
+  same paths as before), and its summary table is extended from a
+  single per-iter median to three rows: per-iter median,
+  `wall_measured_ms`, and `wall_total_ms` — the last has the
+  lowest CV in our environment (§13) and is now the recommended
+  primary metric for small (<0.5%) deltas.
+- `parse-jfr-alloc.py`, `find-jfr-callers.py`,
+  `find-jfr-alloc-callers.py` were added (§9). The first two are
+  the symmetric-allocation pair for the existing `parse-jfr.py`;
+  the third pivots from a sampled method to its top callers and is
+  useful for both metrics (`mapConserve.loop$1` showed up as a
+  concentrated leaf in execution samples; `find-jfr-callers.py`
+  attributes its samples to specific transformer callers).
+
+#### Wins
+
+Each row's "alloc impact" is the lambda/closure/object volume
+eliminated per bench run as attributed by JFR; the wall-time deltas
+are from `compare.sh 5..8 × 3 warmup × 10..15 measured` against the
+round-1 tip:
+
+| Change                                                                  | Alloc impact / run  | Wall delta |
+| ----------------------------------------------------------------------- | ------------------: | ---------: |
+| `Modifiers.equals` eq-first short-circuits                              | reduced BoxesRunTime |  small     |
+| `LazyTreeCopier.DefDef` `sameListList` for `vparamss`                   | reduced eq cost     | small      |
+| `deriveSymbols` / `TypeMap.mapOver(syms)` `foreach` -> `while`          | -86 MB Function1    | small      |
+| `Type.substSym` 1-slot `SubstSymMap` cache                              | -1.8 GB SubstSymMap | -0.93%     |
+| `BatchSourceFile.lineIndices` `for` -> `while` (no Int boxing)          | -1.5 GB Integer + PartialFunction | -1.05% |
+| `isSubArgs` inline `corresponds3` + `isSubArg` as `while`               | -336 MB Function2   | -0.46%     |
+| `Symbol.overriddenSymbol` inline filter (no Function1)                  | -351 MB Function1   | (combined) |
+| `Types.isWithinBounds` inline `corresponds` as `while`                  | -153 MB Function2   | (combined) |
+| `ConstantFolder.apply` inline `fold` (no by-name `Function0`)           | -149 MB Function0   | (combined) |
+| `synthetics.get` inline `debuglog` Option mapping                       | reduced Option/Some | (combined) |
+| `BTypesFromSymbols.classBTypeFromSymbol` cache check before init lambda | -340 MB Function1   | (combined) |
+| `BTypesFromSymbols.primitiveOrClassToBType` `getOrElse` -> `get`/`isDefined` | -261 MB Function0 | -1.03%   |
+| `Typers.typedModifiers` skip `Modifiers.copy` when `annotations eq Nil` | -233 MB Modifiers   | -0.32%    |
+
+Cumulative round-2 wall-time gain over the round-1 tip
+(`compare.sh 5 3 10`, n=5 JVM runs per side; bench-env.sh not active
+on this measurement, so absolute medians are noisier than §10.1):
+
+| metric              | baseline median | optimized median | delta              |
+| ------------------- | --------------: | ---------------: | -----------------: |
+| per-iter median     |        9353 ms  |        9233 ms   |  -120 ms / -1.28%  |
+| `wall_measured_ms`  |       93367 ms  |       92801 ms   |  -566 ms / -0.61%  |
+| `wall_total_ms`     |      144979 ms  |      144425 ms   |  -554 ms / -0.38%  |
+
+Per-iter median (-1.28%) is the noisiest of the three;
+`wall_measured_ms` (-0.61%) is the more reliable single-number
+estimate per §13. The gap between -1.28% and -0.38% is the variance
+floor — if you re-run, expect any of those numbers to shift by ~0.5
+percentage points. Combined round-1 + round-2 vs the original
+baseline (a separate `compare.sh` against `BASE=/home/stefan.zeiger/baseline`)
+adds the round-1 ~3.3%, putting the cumulative span at roughly
+3.5-5% wall on this workload — most of the round-2 individual deltas
+overlap on the type-substitution / tree-transformer paths and so
+don't add linearly.
+
+Round 2 highlights, methodology-wise:
+
+- The single biggest workflow change was adding **`ObjectAllocationSample`
+  events** to the JFR recording. Roughly two-thirds of the round-2
+  wins (`SubstSymMap` cache, `BatchSourceFile.lineIndices`, both
+  `BTypesFromSymbols` sites, `corresponds3`, `overriddenSymbol`,
+  `isWithinBounds`, `ConstantFolder.apply`, `typedModifiers`) had no
+  visible signature in `parse-jfr.py`'s self/inclusive tables — they
+  surfaced only as 100-500 MB entries in `parse-jfr-alloc.py`.
+- The 1-slot `SubstSymMap` cache pattern (§7 "Caching map instances on
+  hot paths") is now a reusable template for any other immutable
+  type-map heavily allocated on a known repeating from/to pair.
+- Several attempts at "obvious" lambda elimination regressed (§8 "When
+  source-level lambda elimination doesn't help"). The negative result
+  matters: the JIT's escape analysis is doing a lot of work that
+  source-level rewrites can disrupt.
+
+**Correctness at HEAD of the branch (`24f32e17ba`):**
 
 - Bytecode identity: verified end-to-end on every commit and after the
   final rebuild.
 - MiMa: `library/mimaReportBinaryIssues` + `reflect/mimaReportBinaryIssues`
   green.
-- JUnit: `junit/test` green (716 `@Test` methods).
-- partest: `pos neg run jvm specialized instrumented` green — 4656
-  passed, 0 failed, 0 errors, 2 Java-version-gated skips (`pos/t12396`
-  requires Java 21+), 4m59s wall time.
+- JUnit: `junit/test` green — 1873 tests, 0 failed, 7 skipped.
+- partest: `pos neg run jvm specialized instrumented` green — 4658 total
+  (4656 passed, 2 Java-version-gated skips), 0 failed, 5m11s wall time.
+  Plus all remaining non-trivial categories: `res scalap presentation`
+  (80), `--srcpath scaladoc` (81), `--srcpath async` (50),
+  `scalacheck/test` (1172), `osgiTestFelix/test` (4),
+  `osgiTestEclipse/test` (4) — all green.
+
+### 10.3 Future directions
+
+After round 2 the allocation profile is dominated by inherent compiler
+data structures whose volume is set by the workload, not the call
+shape. Ranked by attribution (recent `parse-jfr-alloc.py` of the
+HEAD-tip JFR, totals ~44 GB / bench run):
+
+| Top allocator                                  | % of run | Inherent? | Notes |
+| ---------------------------------------------- | -------- | --------- | ----- |
+| `scala.collection.immutable.$colon$colon`      | 12.4%    | yes       | List cons cells. Built into `scala-reflect` API; can't replace with arrays without breaking compatibility. |
+| `byte[]`                                       |  6.4%    | partly    | Mostly classfile I/O + name interning. Could be reduced by a name-table interning pass. |
+| `Types$ClassArgsTypeRef`                       |  5.7%    | partly    | Constructed during type-application; some are immediately discarded. Possible win: pre-check the unique-table before building. |
+| `Contexts$Context`                             |  4.6%    | yes       | One per nested scope. Pooling is complex due to `outer`-chain state; not obviously safe. |
+| `Symbols$TypeHistory`                          |  4.4%    | yes       | One per phase transition per symbol. Linked-list-of-versions design baked into the symbol model. |
+| `TypeMaps$SubstSymMap`                         |  4.2%    | reducible | Already cached 1-slot in `Type.substSym` after round 2. Could grow to keyed-by-symbol-ID cache if a workload ever justifies it. |
+| `Symbols$TermSymbol`                           |  3.4%    | yes       | New symbols created during typer. Volume = source size. |
+| `TypeMaps$AsSeenFromMap`                       |  2.6%    | reducible | Stateful (`capturedSkolems`, `capturedParams`); a cache would need to preserve those. We tried lambda elimination inside it and it regressed (§8 table). |
+
+Concrete directions worth exploring, in rough order of (expected
+gain) / (estimated risk):
+
+- **Cache `ClassArgsTypeRef` construction sites**. The unique-table
+  already deduplicates after the fact, but we still pay the
+  `TypeRef.apply` allocation upstream. A pre-check against the
+  unique-table by `(pre, sym, args)` before allocation could save
+  on the order of 1-2 GB / bench run. The risk is straightforward:
+  any subtle key-equality bug shows up immediately in MiMa /
+  bytecode-identity.
+- **`AsSeenFromMap` keyed cache**. Same idea as `SubstSymMap` but
+  needs a key that captures the prefix + class + the captured-
+  skolems set. Unlike the 1-slot `SubstSymMap` cache (which
+  worked because the same from/to pair recurs across a class
+  body), `AsSeenFromMap` callers are more diverse; a fixed-size
+  LRU might pay off where the 1-slot didn't.
+- **TypeHistory compaction**. After erasure most symbols' info
+  doesn't change again; the linked list of `TypeHistory` cells
+  could be compressed to a single-cell representation post-erasure.
+  Risk: any phase that reads the history (debugger, reflection)
+  needs to be audited.
+- **Drop unnecessary `Modifiers.copy` calls elsewhere**. The
+  `typedModifiers` round-2 win pattern (skip copy when the
+  argument is the same as the field) likely applies in
+  `Trees.copyAttrs`, `treeCopy.*`, and similar tree-copy sites.
+  Each is ~50-100 MB / bench run individually.
+- **Pool `MethodType` / `PolyType` instances**. There are large
+  numbers of structurally-identical method types (`(): Unit`,
+  `(): Object`, etc.) created during Symbol completion that the
+  unique-table never sees because it interns *Type* not
+  *MethodType*. A small lookaside table keyed on the parameter-
+  symbol list and result type could collapse most of them.
+
+What we believe is **not** worth pursuing without major architectural
+work:
+
+- More closure elimination on tree-transformer hot paths
+  (`Trees$$Lambda$691/694`, `Typers$Typer$$Lambda$892/893`, ~1.4 GB
+  combined in JFR). Round 2 spent multiple cycles on these and every
+  attempt regressed. The JIT is handling them well enough that
+  source-level changes consistently make things worse.
+- General `$colon$colon` reduction. Replacing `List` with `Vector` /
+  arrays would change the public `scala-reflect` API, which we cannot
+  do. Internal `List`->`Array` rewrites are possible (e.g. parameter
+  symbol lists) but each is a localized refactor with marginal
+  expected gain.
+- `Context` pooling. The `outer`/`enclosing`/`nestingLevel` state is
+  threaded through every typer entry point; a pool that doesn't
+  perfectly preserve identity semantics will produce wrong type
+  inference results in subtle ways.
 
 ## 11. Low-noise benchmarking environment (`bench-env.sh`)
 

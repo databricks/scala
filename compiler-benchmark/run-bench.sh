@@ -35,6 +35,12 @@
 #   PERF_FIFO_DIR                   only used when BENCH_PERF_MODE=measured-only;
 #                                   directory for the perf-control FIFO pair
 #                                   (default: $OUTDIR-perfctl)
+#   EXTRA_JVM_OPTS                  appended to the java command line before
+#                                   `-cp`.  Use for ad-hoc JFR / GC / JIT flags
+#                                   (e.g. for profiling runs, see README §6).
+#                                   Quote multi-token values via the env, e.g.:
+#                                     EXTRA_JVM_OPTS="-XX:+FlightRecorder \
+#                                       -XX:StartFlightRecording=filename=/tmp/r.jfr,settings=profile"
 set -e
 DIST=${1:-/home/stefan.zeiger/scala/build/pack}
 WARMUP=${2:-3}
@@ -81,7 +87,7 @@ PERF_FIFO_DIR=${PERF_FIFO_DIR:-${OUTDIR}-perfctl}
 
 # Build the inner command (java ... CompilerBench ...) once; perf wraps it
 # without changing the cgroup/taskset semantics around it.
-JAVA_CMD=( "$JAVA_BIN" -Xms2g -Xmx2g -XX:+UseParallelGC -cp "$CP"
+JAVA_CMD=( "$JAVA_BIN" -Xms2g -Xmx2g -XX:+UseParallelGC ${EXTRA_JVM_OPTS:-} -cp "$CP"
   benchmark.CompilerBench "$SRC_LIST" "$COMPILE_CP" "$OUTDIR" "$WARMUP" "$ITERS" )
 
 PERF_PREFIX=()

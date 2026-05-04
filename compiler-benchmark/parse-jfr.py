@@ -18,6 +18,13 @@ def parse(path, include_states=None):
         s = line.strip()
         if s.startswith("jdk.ExecutionSample {"):
             current = {"stack": []}
+        elif s.startswith("jdk."):
+            # Other jdk.* events (e.g. ObjectAllocationSample) when both event
+            # types share a recording.  Skip until the next ExecutionSample.
+            current = None
+            in_stack = False
+        elif current is None:
+            pass
         elif s.startswith("state ="):
             current["state"] = s.split("=", 1)[1].strip().strip('"')
         elif s.startswith("stackTrace = ["):
@@ -30,7 +37,7 @@ def parse(path, include_states=None):
             else:
                 current["stack"].append(s)
         elif s == "}":
-            if current and (include_states is None or current.get("state") in include_states):
+            if include_states is None or current.get("state") in include_states:
                 samples.append(current)
             current = None
     return samples
