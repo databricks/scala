@@ -1573,7 +1573,10 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
     def info_=(info: Type) {
       assert(info ne null)
-      infos = TypeHistory(currentPeriod, info, null)
+      // OPT mutate the existing single-element history rather than
+      // allocating a fresh one (the chain we'd discard isn't observable).
+      if (infos ne null) infos = infos.reset(currentPeriod, info)
+      else infos = TypeHistory(currentPeriod, info, null)
       unlock()
       _validTo = if (info.isComplete) currentPeriod else NoPeriod
     }
@@ -1703,7 +1706,8 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
         this.infos = oldest
         oldest
       } else {
-        this.infos = TypeHistory(validTo, info1, null)
+        // OPT reuse the existing single-element history if possible.
+        this.infos = oldest.reset(validTo, info1)
         this.infos
       }
     }
@@ -3626,7 +3630,8 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     privateWithin = this
 
     override def info_=(info: Type) = {
-      infos = TypeHistory(1, NoType, null)
+      // OPT use the shared sentinel; NoSymbol.info_= is called repeatedly.
+      infos = noTypeHistory
       unlock()
       validTo = currentPeriod
     }
@@ -3812,10 +3817,34 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     if (settings.isDebug) printStackTrace()
   }
 
-  /** A class for type histories */
-  private case class TypeHistory(var validFrom: Period, info: Type, prev: TypeHistory) {
+  /** A class for type histories.
+    *
+    * Mutable so that the most common transition -- `info_=` resetting a
+    * symbol's info to a single-element history -- can reuse the previous
+    * head allocation rather than allocating a fresh instance.  Backports
+    * the 2.13 PR scala/scala#8463 (Diego Alonso, "TypeHistory: use
+    * mutability to avoid allocations").
+    *
+    * `noTypeHistory` is the sentinel used for symbols whose info has been
+    * reset (see `Symbols.reset`); it must not be mutated, so `reset` falls
+    * back to allocation when called on it.
+    */
+  private class TypeHistory(var validFrom: Period, var info: Type, var prev: TypeHistory) {
     assert((prev eq null) || phaseId(validFrom) > phaseId(prev.validFrom), this)
     assert(validFrom != NoPeriod, this)
+
+    /** Re-purpose this `TypeHistory` for a single-element history at
+      * `validFrom` carrying `info`.  `prev` is cleared.  Returns `this`
+      * unless this is the shared `noTypeHistory` sentinel, in which case
+      * a fresh instance is allocated.
+      */
+    final def reset(validFrom: Period, info: Type): TypeHistory =
+      if (this ne noTypeHistory) {
+        this.validFrom = validFrom
+        this.info      = info
+        this.prev      = null
+        this
+      } else new TypeHistory(validFrom, info, null)
 
     private def phaseString = {
       val phase = phaseOf(validFrom)
@@ -3827,6 +3856,11 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
     def oldest: TypeHistory = if (prev == null) this else prev.oldest
   }
+  private object TypeHistory {
+    def apply(validFrom: Period, info: Type, prev: TypeHistory): TypeHistory =
+      new TypeHistory(validFrom, info, prev)
+  }
+  private[this] final val noTypeHistory = TypeHistory(1, NoType, null)
 
 // ----- Hoisted closures and convenience methods, for compile time reductions -------
 
