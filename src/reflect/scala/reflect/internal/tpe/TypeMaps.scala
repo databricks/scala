@@ -18,6 +18,7 @@ package tpe
 import scala.collection.{ mutable, immutable }
 import Flags._
 import scala.annotation.tailrec
+import scala.reflect.internal.util.ReusableInstance
 import Variance._
 
 private[internal] trait TypeMaps {
@@ -529,12 +530,79 @@ private[internal] trait TypeMaps {
   @deprecated("use new AsSeenFromMap instead", "2.12.0")
   final def newAsSeenFromMap(pre: Type, clazz: Symbol): AsSeenFromMap = new AsSeenFromMap(pre, clazz)
 
+  /** Tiny re-entrant pool of `AsSeenFromMap` instances.  `Type.asSeenFrom`
+    * was the largest remaining map-allocation site after Round-2 (~990 MB /
+    * bench run, second only to `TypeRef$.apply`).  Each call previously
+    * constructed a fresh map only to discard it; we now check out a
+    * mutable instance from this pool, `init` it for the call, and return
+    * it on completion.
+    *
+    * Why not `ReusableInstance.using` ?
+    *  1. It allocates a `Function1` closure (`m => ...`) at the call site
+    *     — measurably negating much of the AsSeenFromMap allocation win.
+    *  2. The single cache slot is exhausted by even the most superficial
+    *     re-entrancy (asSeenFrom is recursive through `mapOver`), so the
+    *     fallback `make()` runs ~50% of the time.
+    *
+    * Instead we use a small Array-backed pool and inline the
+    * acquire/release into `asSeenFrom` directly.
+    *
+    * The pool is grown on-demand and never shrinks.  Only safe to use from
+    * `isCompilerUniverse`; runtime-reflection callers (which can be re-
+    * entered from arbitrary user threads) bypass the pool.
+    */
+  private[this] var asSeenFromMapPool: Array[AsSeenFromMap] = _
+  private[this] var asSeenFromMapPoolDepth: Int = 0
+
+  private[reflect] def acquireAsSeenFromMap(): AsSeenFromMap = {
+    val pool = asSeenFromMapPool
+    if (pool == null || asSeenFromMapPoolDepth >= pool.length) {
+      val newPool: Array[AsSeenFromMap] =
+        if (pool == null) new Array[AsSeenFromMap](4)
+        else java.util.Arrays.copyOf(pool, pool.length * 2)
+      newPool(asSeenFromMapPoolDepth) = new AsSeenFromMap(NoType, NoSymbol)
+      asSeenFromMapPool = newPool
+      val m = newPool(asSeenFromMapPoolDepth)
+      asSeenFromMapPoolDepth += 1
+      m
+    } else {
+      var m = pool(asSeenFromMapPoolDepth)
+      if (m eq null) {
+        m = new AsSeenFromMap(NoType, NoSymbol)
+        pool(asSeenFromMapPoolDepth) = m
+      }
+      asSeenFromMapPoolDepth += 1
+      m
+    }
+  }
+  private[reflect] def releaseAsSeenFromMap(): Unit = {
+    asSeenFromMapPoolDepth -= 1
+  }
+
   /** A map to compute the asSeenFrom method.
     */
-  class AsSeenFromMap(seenFromPrefix0: Type, seenFromClass: Symbol) extends TypeMap with KeepOnlyTypeConstraints {
-    private val seenFromPrefix: Type = if (seenFromPrefix0.typeSymbolDirect.hasPackageFlag && !seenFromClass.hasPackageFlag)
-      seenFromPrefix0.packageObject.typeOfThis
-    else seenFromPrefix0
+  class AsSeenFromMap(seenFromPrefix0: Type, seenFromClass0: Symbol) extends TypeMap with KeepOnlyTypeConstraints {
+    private[this] var seenFromPrefix: Type   = seenFromPrefix0
+    private[this] var seenFromClass: Symbol  = seenFromClass0
+    private[this] var isStablePrefix: Boolean = seenFromPrefix.isStable
+    init(seenFromPrefix0, seenFromClass0)
+
+    /** Re-initialize this map for re-use against a fresh `(pre, clazz)`.
+      * Resets *all* mutable state; safe to call from `ReusableInstance.using`.
+      */
+    def init(seenFromPrefix0: Type, seenFromClass0: Symbol): this.type = {
+      seenFromPrefix =
+        if (seenFromPrefix0.typeSymbolDirect.hasPackageFlag && !seenFromClass0.hasPackageFlag)
+          seenFromPrefix0.packageObject.typeOfThis
+        else seenFromPrefix0
+      seenFromClass    = seenFromClass0
+      isStablePrefix   = seenFromPrefix.isStable
+      _capturedSkolems = Nil
+      _capturedParams  = Nil
+      capturedThisIds  = 0
+      wroteAnnotation  = false
+      this
+    }
     // Some example source constructs relevant in asSeenFrom:
     //
     // object CaptureThis {
@@ -566,7 +634,6 @@ private[internal] trait TypeMaps {
 
     private var _capturedSkolems: List[Symbol] = Nil
     private var _capturedParams: List[Symbol]  = Nil
-    private val isStablePrefix = seenFromPrefix.isStable
 
     // isBaseClassOfEnclosingClassOrInfoIsNotYetComplete would be a more accurate
     // but less succinct name.

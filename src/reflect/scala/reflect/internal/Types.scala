@@ -726,13 +726,24 @@ trait Types
           || skipPrefixOf(pre, clazz)
         )
         if (trivial) this
-        else {
-          val m     = new AsSeenFromMap(pre.normalize, clazz)
-          val tp    = m(this)
-          val tp1   = existentialAbstraction(m.capturedParams, tp)
-
+        else if (!isCompilerUniverse) {
+          // Runtime reflection: keep the original allocate-per-call path; the
+          // pool isn't safe under unsynchronised multi-threaded access.
+          val m = new AsSeenFromMap(pre.normalize, clazz)
+          val tp  = m(this)
+          val tp1 = existentialAbstraction(m.capturedParams, tp)
           if (m.capturedSkolems.isEmpty) tp1
           else deriveType(m.capturedSkolems, _.cloneSymbol setFlag CAPTURED)(tp1)
+        } else {
+          // OPT reuse a pooled AsSeenFromMap (~990 MB / bench run otherwise).
+          val m = acquireAsSeenFromMap()
+          try {
+            m.init(pre.normalize, clazz)
+            val tp  = m(this)
+            val tp1 = existentialAbstraction(m.capturedParams, tp)
+            if (m.capturedSkolems.isEmpty) tp1
+            else deriveType(m.capturedSkolems, _.cloneSymbol setFlag CAPTURED)(tp1)
+          } finally releaseAsSeenFromMap()
         }
       } finally if (settings.areStatisticsEnabled) statistics.popTimer(typeOpsStack, start)
     }
