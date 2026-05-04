@@ -197,6 +197,37 @@ final class WeakHashSet[A <: AnyRef](val initialCapacity: Int, val loadFactor: D
     elem
   }
 
+  /** Look up the head of the bucket for `hash` after polling stale entries.
+    * Used together with `addAfterLookup` for "find-or-insert with a custom
+    * structural key" idioms where the caller wants to avoid allocating a
+    * probe instance just for the lookup (e.g. `Types.TypeRef.apply` doesn't
+    * want to allocate a fresh `TypeRef` on cache hits).
+    *
+    * The caller walks `entry.tail` from the returned head to `null`, comparing
+    * `entry.hash == hash` and `entry.get` against its own structural key. If
+    * a match is found, return that entry's element. Otherwise call
+    * `addAfterLookup` to insert a freshly constructed element.
+    *
+    * Single-threaded use only. The caller must not invoke any other
+    * mutating method on this `WeakHashSet` between `lookupBucketHead` and
+    * `addAfterLookup`.
+    */
+  private[internal] def lookupBucketHead(hash: Int): Entry[A] = {
+    removeStaleEntries()
+    table(bucketFor(hash))
+  }
+
+  /** Insert `elem` at the head of the bucket for `hash`. Companion to
+    * `lookupBucketHead`; see that method for the contract.
+    */
+  private[internal] def addAfterLookup(elem: A, hash: Int): A = {
+    val bucket = bucketFor(hash)
+    table(bucket) = new Entry(elem, hash, table(bucket), queue)
+    count += 1
+    if (count > threshold) resize()
+    elem
+  }
+
   // add an element to this set unless it's already in there and return this set
   override def +(elem: A): this.type = elem match {
     case null => throw new NullPointerException("WeakHashSet cannot hold nulls")
@@ -399,7 +430,7 @@ object WeakHashSet {
    * A single entry in a WeakHashSet. It's a WeakReference plus a cached hash code and
    * a link to the next Entry in the same bucket
    */
-  private class Entry[A](element: A, val hash:Int, var tail: Entry[A], queue: ReferenceQueue[A]) extends WeakReference[A](element, queue)
+  private[internal] class Entry[A](element: A, val hash:Int, var tail: Entry[A], queue: ReferenceQueue[A]) extends WeakReference[A](element, queue)
 
   val defaultInitialCapacity = 16
   val defaultLoadFactor = .75

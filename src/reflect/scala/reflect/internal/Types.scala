@@ -2451,7 +2451,43 @@ trait Types
   private final class ClassNoArgsTypeRef(pre: Type, sym: Symbol) extends NoArgsTypeRef(pre, sym)
 
   object TypeRef extends TypeRefExtractor {
-    def apply(pre: Type, sym: Symbol, args: List[Type]): Type = unique({
+    // OPT: pre-walk the unique-table bucket without instantiating a probe TypeRef.
+    //      `unique(new XYZTypeRef(...))` allocates unconditionally and discards
+    //      the new instance on cache hit.  JFR attributed ~2.5 GB / bench run
+    //      to the unconditional `new` here -- by far the largest single
+    //      allocation site in the compiler -- and the cache hit rate is high
+    //      because the hot type-substitution paths re-construct the same
+    //      `(pre, sym, args)` triples repeatedly.  We compute the same hash
+    //      that `TypeRef.computeHashCode` would have computed, walk the bucket
+    //      with `WeakHashSet.lookupBucketHead`, and return the cached entry on
+    //      a structural match -- only allocating on a true miss.
+    def apply(pre: Type, sym: Symbol, args: List[Type]): Type = {
+      if (uniqueRunId != currentRunId) {
+        // First call this run: fall back through `unique` so it lazily
+        // re-creates the WeakHashSet and updates uniqueRunId.  Cost is a
+        // single allocation we pay once per run.
+        return unique(makeTypeRef(pre, sym, args))
+      }
+      val hash = computeHash(pre, sym, args)
+      var entry = uniques.lookupBucketHead(hash)
+      while (entry ne null) {
+        if (entry.hash == hash) {
+          val cand = entry.get
+          if (cand.isInstanceOf[TypeRef]) {
+            val tr = cand.asInstanceOf[TypeRef]
+            // Mirror TypeRef.equals (sym eq -> pre -> args).
+            if ((tr.sym eq sym) && {
+                  val p = tr.pre
+                  ((p eq pre) || (p != null && p.equals(pre)))
+                } && sameElementsEquals(tr.args, args)) return tr
+          }
+        }
+        entry = entry.tail
+      }
+      uniques.addAfterLookup(makeTypeRef(pre, sym, args), hash)
+    }
+
+    private def makeTypeRef(pre: Type, sym: Symbol, args: List[Type]): TypeRef =
       if (args ne Nil) {
         if (sym.isAliasType)              new AliasArgsTypeRef(pre, sym, args)
         else if (sym.isAbstractType)      new AbstractArgsTypeRef(pre, sym, args)
@@ -2465,7 +2501,24 @@ trait Types
         else if (sym.isModuleClass)       new ModuleTypeRef(pre, sym)
         else                              new ClassNoArgsTypeRef(pre, sym)
       }
-    })
+
+    // Exact replica of TypeRef.computeHashCode (~line 2138) operating on
+    // the `(pre, sym, args)` triple directly.  Must stay in sync with
+    // `TypeRef.computeHashCode` -- if the hash there changes, this must too.
+    private def computeHash(pre: Type, sym: Symbol, args: List[Type]): Int = {
+      import scala.util.hashing.MurmurHash3._
+      var h = productSeed
+      h = mix(h, pre.hashCode)
+      h = mix(h, sym.hashCode)
+      var length = 2
+      var elems = args
+      while (elems ne Nil) {
+        h = mix(h, elems.head.hashCode())
+        elems = elems.tail
+        length += 1
+      }
+      finalizeHash(h, length)
+    }
   }
 
   protected def defineNormalized(tr: TypeRef): Unit = {
