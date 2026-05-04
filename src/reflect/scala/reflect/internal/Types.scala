@@ -3762,10 +3762,33 @@ trait Types
   def JavaMethodType(params: List[Symbol], resultType: Type): JavaMethodType =
     new JavaMethodType(params, resultType) // don't unique this!
 
+  // OPT small ring-buffer LRU for `MethodType` creation in `copyMethodType`.
+  //     ~290 MB / bench run flow through this path; profiling shows many of
+  //     them carry the same `(params, resultType)` triple as a recently-
+  //     constructed instance (e.g. for nullary methods returning a frequently
+  //     used singleton type, or for repeated `cloneInfo`/`erasure` walks).
+  //     Identity-based check avoids the structural hashCode on the hot path
+  //     while still catching the common reuse cases.
+  private[this] val methodTypeCacheSize = 4
+  private[this] val methodTypeCache: Array[MethodType] = new Array[MethodType](methodTypeCacheSize)
+  private[this] var methodTypeCacheNext: Int = 0
+
   /** Create a new MethodType of the same class as tp, i.e. keep JavaMethodType */
   def copyMethodType(tp: Type, params: List[Symbol], restpe: Type): Type = tp match {
     case _: JavaMethodType => JavaMethodType(params, restpe)
-    case _                 => MethodType(params, restpe)
+    case _                 =>
+      // Linear scan of a tiny ring buffer; on a miss we evict the oldest slot.
+      var i = 0
+      while (i < methodTypeCacheSize) {
+        val cached = methodTypeCache(i)
+        if ((cached ne null) && (cached.params eq params) && (cached.resultType eq restpe))
+          return cached
+        i += 1
+      }
+      val mt = MethodType(params, restpe)
+      methodTypeCache(methodTypeCacheNext) = mt
+      methodTypeCacheNext = (methodTypeCacheNext + 1) % methodTypeCacheSize
+      mt
   }
 
   /** A creator for intersection type where intersections of a single type are
