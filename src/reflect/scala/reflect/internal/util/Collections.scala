@@ -114,33 +114,35 @@ trait Collections {
   final def map2Conserve[A <: AnyRef, B](xs: List[A], ys: List[B])(f: (A, B) => A): List[A] = {
     // Note to developers: there exists a duplication between this function and `List#mapConserve`.
     // If any successful optimization attempts or other changes are made, please rehash them there too.
-    @tailrec
-    def loop(mapped: ListBuffer[A], unchanged: List[A], pending0: List[A], pending1: List[B]): List[A] = {
-      if (pending0.isEmpty || pending1.isEmpty) {
-        if (mapped eq null) unchanged
-        else mapped.prependToList(unchanged)
-      } else {
-        val head00 = pending0.head
-        val head01 = pending1.head
-        val head1  = f(head00, head01)
+    var mapped: ListBuffer[A] = null
+    var unchanged: List[A] = xs
+    var pending0: List[A] = xs
+    var pending1: List[B] = ys
 
-        if ((head1 eq head00.asInstanceOf[AnyRef])) {
-          loop(mapped, unchanged, pending0.tail, pending1.tail)
-        } else {
-          val b = if (mapped eq null) new ListBuffer[A] else mapped
-          var xc = unchanged
-          while ((xc ne pending0) && (xc ne pending1)) {
-            b += xc.head
-            xc = xc.tail
-          }
-          b += head1
-          val tail0 = pending0.tail
-          val tail1 = pending1.tail
-          loop(b, tail0, tail0, tail1)
+    while ((pending0 ne Nil) && (pending1 ne Nil)) {
+      val head00 = pending0.head
+      val head01 = pending1.head
+      val head1 = f(head00, head01)
+
+      if (head1.asInstanceOf[AnyRef] eq head00.asInstanceOf[AnyRef]) {
+        pending0 = pending0.tail
+        pending1 = pending1.tail
+      } else {
+        if (mapped eq null) mapped = new ListBuffer[A]
+        var xc = unchanged
+        while ((xc ne pending0) && (xc ne pending1)) {
+          mapped += xc.head
+          xc = xc.tail
         }
+        mapped += head1
+        pending0 = pending0.tail
+        pending1 = pending1.tail
+        unchanged = pending0
       }
     }
-    loop(null, xs, xs, ys)
+
+    if (mapped eq null) unchanged
+    else mapped.prependToList(unchanged)
   }
 
   final def map3[A, B, C, D](xs1: List[A], xs2: List[B], xs3: List[C])(f: (A, B, C) => D): List[D] = {
