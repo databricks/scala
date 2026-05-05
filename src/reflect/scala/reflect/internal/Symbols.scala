@@ -3672,6 +3672,30 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
 
   lazy val NoSymbol: NoSymbol = makeNoSymbol
 
+  private def substituteDerivedSymbolInfos(syms: List[Symbol], syms1: List[Symbol]): Unit = {
+    if (syms1 ne Nil) {
+      var s: List[Symbol] = syms1
+      if (!isCompilerUniverse) {
+        val map = new SubstSymMap(syms, syms1)
+        while (s ne Nil) {
+          s.head.modifyInfo(map)
+          s = s.tail
+        }
+      } else {
+        // OPT reuse a pooled SubstSymMap in deriveSymbols*; this call pattern
+        //     has many unique `(syms, syms1)` pairs so the 1-slot cache in
+        //     `Type.substSym` cannot amortize the allocation here.
+        val map = acquireSubstSymMap().init(syms, syms1)
+        try {
+          while (s ne Nil) {
+            s.head.modifyInfo(map)
+            s = s.tail
+          }
+        } finally releaseSubstSymMap()
+      }
+    }
+  }
+
   /** Derives a new list of symbols from the given list by mapping the given
    *  list across the given function.  Then fixes the info of all the new symbols
    *  by substituting the new symbols for the original symbols.
@@ -3684,15 +3708,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
     if (syms.isEmpty) Nil
     else {
       val syms1 = mapList(syms)(symFn)
-      val map = new SubstSymMap(syms, syms1)
-      // OPT explicit `while` avoids the per-call `Function1` allocation that
-      //     `List.foreach(_ modifyInfo map)` would create.  Hot path during
-      //     uncurry/erasure where every method derive triggers this.
-      var s: List[Symbol] = syms1
-      while (s ne Nil) {
-        s.head.modifyInfo(map)
-        s = s.tail
-      }
+      substituteDerivedSymbolInfos(syms, syms1)
       syms1
     }
   }
@@ -3709,13 +3725,7 @@ trait Symbols extends api.Symbols { self: SymbolTable =>
    */
   def deriveSymbols2[A](syms: List[Symbol], as: List[A], symFn: (Symbol, A) => Symbol): List[Symbol] = {
     val syms1 = map2(syms, as)(symFn)
-    // OPT see `deriveSymbols`: avoid the `Function1` allocation from
-    //     `syms1.foreach(_.substInfo(syms, syms1))` in this hot loop.
-    var s: List[Symbol] = syms1
-    while (s ne Nil) {
-      s.head.substInfo(syms, syms1)
-      s = s.tail
-    }
+    substituteDerivedSymbolInfos(syms, syms1)
     syms1
   }
 

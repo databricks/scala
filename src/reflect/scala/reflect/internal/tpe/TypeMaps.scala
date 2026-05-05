@@ -579,6 +579,39 @@ private[internal] trait TypeMaps {
     asSeenFromMapPoolDepth -= 1
   }
 
+  /** Re-entrant pool for `SubstSymMap` re-use in hot substitution loops
+    * (`Symbols.deriveSymbols*`).  Like `AsSeenFromMap`, this is only used in
+    * compiler-universe mode to avoid sharing mutable map state with runtime-
+    * reflection callers.
+    */
+  private[this] var substSymMapPool: Array[SubstSymMap] = _
+  private[this] var substSymMapPoolDepth: Int = 0
+
+  private[reflect] def acquireSubstSymMap(): SubstSymMap = {
+    val pool = substSymMapPool
+    if (pool == null || substSymMapPoolDepth >= pool.length) {
+      val newPool: Array[SubstSymMap] =
+        if (pool == null) new Array[SubstSymMap](4)
+        else java.util.Arrays.copyOf(pool, pool.length * 2)
+      newPool(substSymMapPoolDepth) = new SubstSymMap(Nil, Nil)
+      substSymMapPool = newPool
+      val m = newPool(substSymMapPoolDepth)
+      substSymMapPoolDepth += 1
+      m
+    } else {
+      var m = pool(substSymMapPoolDepth)
+      if (m eq null) {
+        m = new SubstSymMap(Nil, Nil)
+        pool(substSymMapPoolDepth) = m
+      }
+      substSymMapPoolDepth += 1
+      m
+    }
+  }
+  private[reflect] def releaseSubstSymMap(): Unit = {
+    substSymMapPoolDepth -= 1
+  }
+
   /** A map to compute the asSeenFrom method.
     */
   class AsSeenFromMap(seenFromPrefix0: Type, seenFromClass0: Symbol) extends TypeMap with KeepOnlyTypeConstraints {
@@ -846,18 +879,32 @@ private[internal] trait TypeMaps {
   }
 
   /** A base class to compute all substitutions */
-  abstract class SubstMap[T](from: List[Symbol], to: List[T]) extends TypeMap {
-    // OPT this check was 2-3% of some profiles, demoted to -Xdev
-    if (isDeveloper) assert(sameLength(from, to), "Unsound substitution from "+ from +" to "+ to)
+  abstract class SubstMap[T](from0: List[Symbol], to0: List[T]) extends TypeMap {
+    protected[this] var substFrom: List[Symbol] = Nil
+    protected[this] var substTo: List[T] = Nil
 
     private[this] var fromHasTermSymbol = false
     private[this] var fromMin = Int.MaxValue
     private[this] var fromMax = Int.MinValue
     private[this] var fromSize = 0
-    // OPT explicit while loop avoids the closure/dispatch of List.foreach which
-    //     was visible in profiles as a constructor hotspot (SubstMap is re-allocated
-    //     on every `substSym` / `subst`).
-    locally {
+
+    initSubstMap(from0, to0)
+
+    protected final def resetSubstMap(from: List[Symbol], to: List[T]): this.type = {
+      initSubstMap(from, to)
+      this
+    }
+
+    private[this] def initSubstMap(from: List[Symbol], to: List[T]): Unit = {
+      // OPT this check was 2-3% of some profiles, demoted to -Xdev
+      if (isDeveloper) assert(sameLength(from, to), "Unsound substitution from " + from + " to " + to)
+      substFrom = from
+      substTo = to
+      fromHasTermSymbol = false
+      fromMin = Int.MaxValue
+      fromMax = Int.MinValue
+      fromSize = 0
+      // OPT explicit while loop avoids the closure/dispatch of List.foreach.
       var fs = from
       while (fs ne Nil) {
         val sym = fs.head
@@ -924,7 +971,7 @@ private[internal] trait TypeMaps {
         val symId = sym.id
         val fromMightContainSym = symId >= fromMin && symId <= fromMax
         fromMightContainSym && (
-          symId == fromMin || symId == fromMax || (fromSize > 2 && from.contains(sym))
+          symId == fromMin || symId == fromMax || (fromSize > 2 && substFrom.contains(sym))
         )
       }
       var syms1 = syms
@@ -936,13 +983,14 @@ private[internal] trait TypeMaps {
       false
     }
 
-    // OPT `from eq Nil` is a direct reference compare vs the virtual `List.isEmpty`.
-    //     The empty-`from` path fires for every map built on a phantom/no-op substitution
+    // OPT `substFrom eq Nil` is a direct reference compare vs the virtual
+    //     `List.isEmpty`. The empty path fires for every map built on a
+    //     phantom/no-op substitution
     //     (e.g., cloneSymbols with no real rebinding); avoiding the vtable lookup here
     //     helps HotSpot inline the outer caller.
-    def apply(tp0: Type): Type = if (from eq Nil) tp0 else {
+    def apply(tp0: Type): Type = if (substFrom eq Nil) tp0 else {
       val tp                    = mapOver(renameBoundSyms(tp0))
-      def substFor(sym: Symbol) = subst(tp, sym, from, to)
+      def substFor(sym: Symbol) = subst(tp, sym, substFrom, substTo)
 
       tp match {
         // @M
@@ -975,8 +1023,10 @@ private[internal] trait TypeMaps {
   }
 
   /** A map to implement the `substSym` method. */
-  class SubstSymMap(from: List[Symbol], to: List[Symbol]) extends SubstMap(from, to) {
+  class SubstSymMap(from0: List[Symbol], to0: List[Symbol]) extends SubstMap(from0, to0) {
     def this(pairs: (Symbol, Symbol)*) = this(pairs.toList.map(_._1), pairs.toList.map(_._2))
+
+    def init(from: List[Symbol], to: List[Symbol]): this.type = resetSubstMap(from, to)
 
     protected def toType(fromtp: Type, sym: Symbol) = fromtp match {
       case TypeRef(pre, _, args) => copyTypeRef(fromtp, pre, sym, args)
@@ -996,10 +1046,10 @@ private[internal] trait TypeMaps {
         sym
       }
     }
-    private def substFor(sym: Symbol) = subst(sym, from, to)
+    private def substFor(sym: Symbol) = subst(sym, substFrom, substTo)
 
     override def apply(tp: Type): Type = (
-      if (from eq Nil) tp
+      if (substFrom eq Nil) tp
       else tp match {
         case TypeRef(pre, sym, args) if pre ne NoPrefix =>
           val newSym = substFor(sym)
@@ -1017,9 +1067,9 @@ private[internal] trait TypeMaps {
     object mapTreeSymbols extends TypeMapTransformer {
       val strictCopy = newStrictTreeCopier
 
-      def termMapsTo(sym: Symbol) = from indexOf sym match {
+      def termMapsTo(sym: Symbol) = substFrom.indexOf(sym) match {
         case -1   => None
-        case idx  => Some(to(idx))
+        case idx  => Some(substTo(idx))
       }
 
       // if tree.symbol is mapped to another symbol, passes the new symbol into the
