@@ -1419,8 +1419,10 @@ trait Contexts { self: Analyzer =>
         allImportInfos(unit) ::= (info, owner)
       info
     }
-    override final def imports      = impInfo :: super.imports
-    override final def firstImport  = Some(impInfo)
+    private[this] val importsCache: List[ImportInfo] = impInfo :: super.imports
+    private[this] val firstImportCache: Option[ImportInfo] = Some(impInfo)
+    override final def imports      = importsCache
+    override final def firstImport  = firstImportCache
     override final def importOrNull = impInfo
 
     override final def toString     = s"${super.toString} with ImportContext { $impInfo; outer.owner = ${outer.owner} }"
