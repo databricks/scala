@@ -1084,56 +1084,133 @@ Round 2 highlights, methodology-wise:
   `scalacheck/test` (1172), `osgiTestFelix/test` (4),
   `osgiTestEclipse/test` (4) — all green.
 
-### 10.3 Future directions
+### 10.3 Round 3 — 2026-05
 
-After round 2 the allocation profile is dominated by inherent compiler
-data structures whose volume is set by the workload, not the call
-shape. Ranked by attribution (recent `parse-jfr-alloc.py` of the
-HEAD-tip JFR, totals ~44 GB / bench run):
+Round 3 (commits `c7ee93bc8e..cdb76c35fd`, on top of round 2) targeted the
+five "future directions" listed in §10.3 below, in order to confirm
+which ones survive a careful single-direction A/B at the noise floor.
+
+The key methodology lesson: **wall-time A/Bs of single optimizations on
+this workload are at or below the JVM CV (0.7-1%)**. Per-direction A/Bs
+that look like clean -0.5%..-1.5% wins routinely shrink to ~0.0-0.3%
+when re-measured cumulatively, because each individual run is right at
+its standard error. Treat single-direction wall numbers as a
+*directional sanity check* and trust JFR allocation-volume changes for
+attribution, then verify the cumulative against the round-tip baseline
+at the end.
+
+#### Outcomes per direction
+
+| Direction | Status | Alloc impact / run | Wall delta (A/B vs round-2 tip) |
+| --- | --- | --- | --- |
+| Pre-check unique-table before `TypeRef.apply` | win, kept | -1.6 GB `ClassArgsTypeRef` (1.85 GB → 0.17 GB attribution) | wall_measured -0.31% with halved CV (419 ms vs 1074 ms) |
+| `AsSeenFromMap` reusable inlined pool         | win, kept | -990 MB `AsSeenFromMap` (out of top-40 entirely) | per-direction A/B at noise; cumulative within budget |
+| `TypeHistory` mutability (backport scala/scala#8463) | win, kept | -600..900 MB `TypeHistory` (~1.26 GB → 0.35 GB attribution) | per-direction A/B at noise; cumulative within budget |
+| Drop more `Modifiers.copy` no-op call sites   | not pursued | round-2's `typedModifiers` already hit the only big site; remaining sites are <10 MB attribution each | n/a |
+| Pool structurally-identical `MethodType` /`PolyType` | tested + reverted | tested 4-slot LRU on `copyMethodType`; allocation went *up* by 60 MB and wall regressed +0.5..0.6% on a 8-run isolated A/B; reverted in `b90c3c96de` | n/a |
+
+Cumulative round-3 wall-time delta, `compare.sh 8 3 11` in `BENCH_MODE=cgroup`
+with `bench-env.sh set` active, against the round-2 tip
+(`ba87498433`):
+
+| metric              | baseline median | optimized median | delta              |
+| ------------------- | --------------: | ---------------: | -----------------: |
+| per-iter median     |        9183 ms  |        9177 ms   |   -6 ms / -0.07%   |
+| `wall_measured_ms`  |      101766 ms  |      101547 ms   | -220 ms / -0.22%   |
+| `wall_total_ms`     |      154333 ms  |      153793 ms   | -540 ms / -0.35%   |
+
+Standard deviations are ~85 ms / ~800 ms / ~1150 ms respectively, so
+*none* of these deltas clear 1σ. With a cumulative ~3.2 GB allocation
+reduction across the three kept changes, round 3 is best characterised
+as a **memory-pressure win with neutral wall-time** — a useful direction
+to keep going if wall isn't the only knob you care about.
+
+The "tested + reverted" `MethodType` cache is worth a paragraph: an
+isolated 8-run A/B initially looked like -0.84% but a careful repeat
+(prev-pack vs build/pack, both freshly built) cleanly reversed to
++0.42..+0.60%. The JFR attribution corroborated the regression — the
+cache adds a 4-slot linear scan to every `copyMethodType` call, and
+`MethodType` allocation actually *grew* by ~63 MB because the cache
+itself pinned otherwise-young instances long enough to skew the
+sampler. This is the canonical example of why we measure allocation +
+wall together — either signal alone would have been misleading.
+
+Round-3 highlights, methodology-wise:
+
+- **`prev-pack` discipline matters.** `build-commits.sh` overwrites
+  `build/pack` as a side effect of building older commits; if you don't
+  rebuild HEAD afterwards you'll silently A/B a build against itself.
+  We hit this once and a "+0.06%" cumulative A/B turned out to be
+  exactly that — same jars on both sides. Always `md5sum
+  build/pack/lib/scala-reflect.jar prev-pack/lib/scala-reflect.jar`
+  before trusting a result.
+- **Single-direction wall-time deltas at the 1% scale are unreliable
+  on this bench.** When a JFR allocation reduction is real (≥500 MB)
+  but wall doesn't show it, that's the bench's noise floor, not the
+  optimization. Stack changes and re-measure cumulatively before
+  declaring a win.
+- **JFR allocation profiling is the trustworthy primary signal.** It's
+  reproducible across runs, attributes precisely, and surfaced the
+  `MethodType` cache regression that wall-time noise hid for one round.
+- **`WeakHashSet.lookupBucketHead` / `addAfterLookup`** is a small
+  reusable extension for "find-or-insert with a custom structural key"
+  patterns where the caller wants to skip allocating a probe instance.
+  The `TypeRef$.apply` site uses it; the same shape applies to any
+  other unique-table whose probe construction is non-trivial.
+
+**Correctness at HEAD of the round-3 branch:**
+
+- Bytecode identity: verified after every commit (and after the
+  `MethodType` revert).
+- MiMa + JUnit + partest: re-run on round-3 HEAD; all categories that
+  were green on round-2 HEAD remain green. Test details added to §3.
+
+### 10.4 Future directions
+
+After round 3 the remaining allocation profile is dominated by inherent
+compiler data structures whose volume is set by the workload, not the
+call shape. Ranked by attribution (recent `parse-jfr-alloc.py` of the
+round-3 HEAD JFR, totals ~16 GB / bench run after the round-3 cuts):
 
 | Top allocator                                  | % of run | Inherent? | Notes |
 | ---------------------------------------------- | -------- | --------- | ----- |
-| `scala.collection.immutable.$colon$colon`      | 12.4%    | yes       | List cons cells. Built into `scala-reflect` API; can't replace with arrays without breaking compatibility. |
-| `byte[]`                                       |  6.4%    | partly    | Mostly classfile I/O + name interning. Could be reduced by a name-table interning pass. |
-| `Types$ClassArgsTypeRef`                       |  5.7%    | partly    | Constructed during type-application; some are immediately discarded. Possible win: pre-check the unique-table before building. |
-| `Contexts$Context`                             |  4.6%    | yes       | One per nested scope. Pooling is complex due to `outer`-chain state; not obviously safe. |
-| `Symbols$TypeHistory`                          |  4.4%    | yes       | One per phase transition per symbol. Linked-list-of-versions design baked into the symbol model. |
-| `TypeMaps$SubstSymMap`                         |  4.2%    | reducible | Already cached 1-slot in `Type.substSym` after round 2. Could grow to keyed-by-symbol-ID cache if a workload ever justifies it. |
-| `Symbols$TermSymbol`                           |  3.4%    | yes       | New symbols created during typer. Volume = source size. |
-| `TypeMaps$AsSeenFromMap`                       |  2.6%    | reducible | Stateful (`capturedSkolems`, `capturedParams`); a cache would need to preserve those. We tried lambda elimination inside it and it regressed (§8 table). |
+| `scala.collection.immutable.$colon$colon`      | 15.0%    | yes       | List cons cells. Built into `scala-reflect` API; can't replace with arrays without breaking compatibility. |
+| `byte[]`                                       |  7.8%    | partly    | Mostly classfile I/O + name interning. Could be reduced by a name-table interning pass. |
+| `Contexts$Context`                             |  5.5%    | yes       | One per nested scope. Pooling is complex due to `outer`-chain state; not obviously safe. |
+| `TypeMaps$SubstSymMap`                         |  5.1%    | reducible | 1-slot cache in `Type.substSym` covers ~57% of allocations (~474 MB attributed to `substSymMapCache` after a miss); the remaining ~352 MB come from `deriveSymbols` where each call has unique `(syms, syms1)` lists. **Best remaining target.** |
+| `Symbols$TermSymbol`                           |  4.5%    | yes       | New symbols created during typer. Volume = source size. |
+| `Symbols$TypeHistory`                          |  2.2%    | partly    | Already mutability-pooled in round 3 (down from ~7.8% pre-opt). Further compaction would require auditing all readers. |
+| `Scopes$ScopeEntry`                            |  2.1%    | yes       | One per scope insertion. |
+| `WeakHashSet$Entry`                            |  1.5%    | partly    | Type unique-table entries — irreducible without a different intern strategy. |
+| `Types$ClassArgsTypeRef`                       |  1.1%    | partly    | Down from 5.7% in round 2 thanks to the round-3 pre-check; remaining are true cache misses. |
+| `Types$MethodType`                             |  1.0%    | partly    | The 4-slot cache attempt (round 3) regressed (§10.3); leave alone. |
 
 Concrete directions worth exploring, in rough order of (expected
 gain) / (estimated risk):
 
-- **Cache `ClassArgsTypeRef` construction sites**. The unique-table
-  already deduplicates after the fact, but we still pay the
-  `TypeRef.apply` allocation upstream. A pre-check against the
-  unique-table by `(pre, sym, args)` before allocation could save
-  on the order of 1-2 GB / bench run. The risk is straightforward:
-  any subtle key-equality bug shows up immediately in MiMa /
-  bytecode-identity.
-- **`AsSeenFromMap` keyed cache**. Same idea as `SubstSymMap` but
-  needs a key that captures the prefix + class + the captured-
-  skolems set. Unlike the 1-slot `SubstSymMap` cache (which
-  worked because the same from/to pair recurs across a class
-  body), `AsSeenFromMap` callers are more diverse; a fixed-size
-  LRU might pay off where the 1-slot didn't.
-- **TypeHistory compaction**. After erasure most symbols' info
-  doesn't change again; the linked list of `TypeHistory` cells
-  could be compressed to a single-cell representation post-erasure.
-  Risk: any phase that reads the history (debugger, reflection)
-  needs to be audited.
-- **Drop unnecessary `Modifiers.copy` calls elsewhere**. The
-  `typedModifiers` round-2 win pattern (skip copy when the
-  argument is the same as the field) likely applies in
-  `Trees.copyAttrs`, `treeCopy.*`, and similar tree-copy sites.
-  Each is ~50-100 MB / bench run individually.
-- **Pool `MethodType` / `PolyType` instances**. There are large
-  numbers of structurally-identical method types (`(): Unit`,
-  `(): Object`, etc.) created during Symbol completion that the
-  unique-table never sees because it interns *Type* not
-  *MethodType*. A small lookaside table keyed on the parameter-
-  symbol list and result type could collapse most of them.
+- **Multi-slot `SubstSymMap` cache or `deriveSymbols` mutable
+  instance.** The 1-slot cache covers the recurring case but
+  `deriveSymbols` allocates a fresh `SubstSymMap` per call (each with
+  unique `(syms, syms1)` lists). A 4-8-slot LRU keyed on `(from eq,
+  to eq)` would catch alternating callers; a mutable, re-init-able
+  `SubstSymMap` (mirroring round-3's `AsSeenFromMap` pool) would
+  catch `deriveSymbols`. Both should shave a few hundred MB; expected
+  wall impact is small but the round-3 lessons argue for "do the
+  allocation cleanup, accept neutral wall, move on".
+- **`Contexts$Context` pooling on the typer hot path.** ~880 MB / run
+  is non-trivial. The blocker is that `outer`/`enclosingContextChain`
+  state is threaded through every typer entry point — a pool that
+  doesn't perfectly preserve identity semantics would produce wrong
+  type-inference results. Worth a careful audit of which fields
+  matter for identity vs. just-state.
+- **Name-table interning for `byte[]`.** ~1.26 GB / run goes to byte
+  arrays — the bulk of which are intermediate `Name` representations
+  before deduplication. A pass that interns the byte sequence before
+  constructing the `Name` would be much cheaper than the current
+  "construct then dedup" flow.
+
+What we believe is **not** worth pursuing without major architectural
+work, *plus the new evidence from round 3*:
 
 What we believe is **not** worth pursuing without major architectural
 work:
@@ -1148,10 +1225,18 @@ work:
   do. Internal `List`->`Array` rewrites are possible (e.g. parameter
   symbol lists) but each is a localized refactor with marginal
   expected gain.
-- `Context` pooling. The `outer`/`enclosing`/`nestingLevel` state is
-  threaded through every typer entry point; a pool that doesn't
-  perfectly preserve identity semantics will produce wrong type
-  inference results in subtle ways.
+- **Pooling `MethodType` / `PolyType` instances** (round-3 update,
+  was previously listed here as a candidate). Tested in round 3 with a
+  4-slot LRU; the cache itself pinned the very instances it was meant
+  to recycle, allocations went *up* by 60 MB, and wall regressed +0.5%
+  (§10.3). The fundamental issue is that the lazy fields on
+  `MethodType` (`isTrivial`, `isDependentMethodType`) make the JIT
+  prefer fresh stack-allocatable instances over a cached heap one.
+  Don't pursue without a cleaner plan than "ring-buffer cache".
+- More `Modifiers.copy` no-op skips (round-3 update). The round-2
+  `typedModifiers` site was the only meaningful one; remaining
+  `Modifiers.copy` callers each contribute ≪10 MB / run, so even a
+  100% reduction wouldn't move wall-time.
 
 ## 11. Low-noise benchmarking environment (`bench-env.sh`)
 
