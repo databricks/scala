@@ -50,7 +50,8 @@ a one-off environment-tuning step via `compiler-benchmark/bench-env.sh` (see
 turns off transparent hugepages, stops chatty systemd units (including
 vendor monitoring agents like Falcon and Kolide, which otherwise
 consume ~6% CPU continuously on our fleet), pins IRQs off the bench
-CPUs, and creates a cgroup-v2 cpuset partition. On our EC2 VM it shaved
+CPUs, and creates a benchmark cpuset cgroup (v2 partition when
+available, pinned cpuset on v1). On our EC2 VM it shaved
 ~1.4% off the *median* compile time and ~28% off *stdev* for 60-second-
 gap spread runs.
 
@@ -187,9 +188,10 @@ Key takeaways:
   - Below that: track absolute-median trends across many rounds rather
     than trusting any single comparison's p-value.
 
-The dominant remaining source of variance on a shared EC2 node is
-cross-VM contention ("noisy neighbours") plus Falcon's in-kernel BPF
-hooks that we can't uninstall from inside the guest (see §11).
+On Ubuntu 22.04/Falcon-enabled hosts, the dominant remaining source of
+variance is cross-VM contention ("noisy neighbours") plus Falcon's
+in-kernel BPF hooks that we can't uninstall from inside the guest (see
+§11).
 
 A companion campaign on a dual-socket bare-metal instance (Xeon
 8468H, full `bench-env.sh` tuning, turbo off, NUMA isolation) did
@@ -198,10 +200,10 @@ A companion campaign on a dual-socket bare-metal instance (Xeon
 plausible culprit is that the 128-thread host has much more ambient
 syscall traffic for Falcon's in-kernel BPF programs to piggy-back on,
 so "the Falcon tax" is larger per bench CPU than on the 32-vCPU VM.
-Details plus a research-backed answer to "is it worth building a
-Falcon-free EC2 image?" are under §11's
-*"How close is this to the theoretical floor?"* and
-*"Is it worth getting rid of Falcon?"* subsections.
+We now run primary campaigns on the Ubuntu 20.04 image (no Falcon
+kernel hooks). Comparative data and fallback caveats for 22.04/Falcon
+hosts are under §11's *"Bare-metal, Ubuntu 20.04, no Falcon kernel
+hooks"* and *"Falcon-free benchmarking is now the default"* subsections.
 
 ## 5. Correctness: what to run after every change
 
@@ -1087,7 +1089,7 @@ Round 2 highlights, methodology-wise:
 ### 10.3 Round 3 — 2026-05
 
 Round 3 (commits `c7ee93bc8e..cdb76c35fd`, on top of round 2) targeted the
-five "future directions" listed in §10.3 below, in order to confirm
+five "future directions" listed in §10.4 below, in order to confirm
 which ones survive a careful single-direction A/B at the noise floor.
 
 The key methodology lesson: **wall-time A/Bs of single optimizations on
@@ -1212,9 +1214,6 @@ gain) / (estimated risk):
 What we believe is **not** worth pursuing without major architectural
 work, *plus the new evidence from round 3*:
 
-What we believe is **not** worth pursuing without major architectural
-work:
-
 - More closure elimination on tree-transformer hot paths
   (`Trees$$Lambda$691/694`, `Typers$Typer$$Lambda$892/893`, ~1.4 GB
   combined in JFR). Round 2 spent multiple cycles on these and every
@@ -1238,18 +1237,78 @@ work:
   `Modifiers.copy` callers each contribute ≪10 MB / run, so even a
   100% reduction wouldn't move wall-time.
 
+### 10.5 Cumulative baseline -> current totals (all sessions)
+
+This section captures the **end-to-end** delta from the pre-optimization
+base commit
+`988a983c5fc8df6f714aeb82b5300e7d63b67035` to the current optimized
+state `20fbdff4a6c0f8f58f62320088cc5e996b30096c`, i.e. all successful
+optimizations across prior and current sessions combined.
+
+Because the benchmark host was replaced, we first re-applied the
+low-noise machine setup (`bench-env.sh set`) on the new instance.  The
+base commit predates `compiler-benchmark/`, so for reproducibility we
+backported the harness directory from current HEAD into a detached
+worktree of the base commit and benchmarked both packs with the same
+driver/scripts.
+
+#### Throughput totals
+
+Measured with interleaved A/B:
+
+```bash
+BASE=/home/stefan.zeiger/scala-base-988a/build/pack \
+NEW=/home/stefan.zeiger/scala/build/pack \
+bash compiler-benchmark/compare.sh 8 3 11
+```
+
+| metric              | baseline median | optimized median | delta                 |
+| ------------------- | --------------: | ---------------: | --------------------: |
+| per-iter median     |       9612.5 ms |        9129.0 ms |  -483.5 ms / -5.03%   |
+| `wall_measured_ms`  |     106158.5 ms |      100826.0 ms | -5332.5 ms / -5.02%   |
+| `wall_total_ms`     |     158385.5 ms |      152251.0 ms | -6134.5 ms / -3.87%   |
+
+Net: about **5.0%** faster by measured wall (`1.053x` speedup), and
+about **3.9%** faster on warmup+measured wall (`1.040x` speedup).
+
+#### Memory totals (allocation sampling)
+
+Measured with paired JFR allocation runs (`jdk.ObjectAllocationSample`,
+`run-bench.sh 1 5`, `TASKSET=0`, parsed with `parse-jfr-alloc.py`):
+
+| pair | baseline total weight | optimized total weight | delta                    |
+| ---- | --------------------: | ---------------------: | -----------------------: |
+| 1    |            14637.1 MB |             11809.0 MB | -2828.1 MB / -19.32%     |
+| 2    |            14748.1 MB |             11696.5 MB | -3051.6 MB / -20.69%     |
+| mean |            14692.6 MB |             11752.8 MB | -2939.9 MB / -20.01%     |
+
+Net: roughly **20% lower** allocation weight over the benchmark corpus.
+
+Representative object-class reductions (mean over the two pairs):
+
+| object class                                  | baseline | optimized | delta                    |
+| --------------------------------------------- | -------: | --------: | -----------------------: |
+| `TypeMaps$SubstSymMap`                        | 610.6 MB |  308.1 MB | -302.5 MB / -49.54%      |
+| `Symbols$TypeHistory`                         | 715.5 MB |  219.9 MB | -495.6 MB / -69.27%      |
+| `Contexts$Context`                            | 688.3 MB |  517.9 MB | -170.4 MB / -24.76%      |
+| `Types$ClassArgsTypeRef`                      | 782.5 MB |   93.3 MB | -689.2 MB / -88.08%      |
+
 ## 11. Low-noise benchmarking environment (`bench-env.sh`)
 
 The scala/compiler-benchmark repo ships a `scripts/benv` that prepares a
 dedicated benchmark host. It expects a hand-built dev kernel, a
 particular motherboard, no hyper-threading at BIOS level, a fixed CPU
-frequency, and cgroup v1 (`cpuset`). None of that applies on a shared
-EC2/KVM guest running Ubuntu 22.04 with cgroup v2.
+frequency, and cgroup v1 (`cpuset`).
+
+Our current benchmarking status quo is a dedicated bare-metal Ubuntu
+20.04 image (cgroup v1 hybrid, no Falcon kernel hooks). We still keep
+Ubuntu 22.04/Falcon-enabled measurements as fallback guidance for cases
+where 20.04 is unavailable.
 
 `compiler-benchmark/bench-env.sh` is our adaptation: same spirit, restricted
-to knobs available inside a KVM guest with `sudo`, and supporting both
-cgroup hierarchies — cgroup v2 unified (Ubuntu 22.04 default) and
-cgroup v1 hybrid (Ubuntu 20.04 default).  The script auto-detects the
+to knobs available with `sudo`, and supporting both cgroup hierarchies —
+cgroup v1 hybrid (Ubuntu 20.04, our preferred benchmark image) and
+cgroup v2 unified (Ubuntu 22.04 fallback). The script auto-detects the
 hierarchy at the top:
 
 - **v2** uses `/sys/fs/cgroup/bench.slice/` with
@@ -1374,8 +1433,8 @@ images we have measured:
   helps — but here we get it for free by choosing the older LTS for
   the bench image.
 
-If you can pick the image, prefer the 20.04 baseline for benchmarking
-runs even at the cost of a slightly older user-space toolchain.  The
+Use the 20.04 baseline image as the default benchmarking environment,
+even at the cost of a slightly older user-space toolchain. The
 spread-run noise floor is meaningfully lower (CV 0.68% vs 1.10% on
 `wall_total_ms`).
 
@@ -1464,8 +1523,9 @@ Observations:
    workloads on the box are about to drift onto bench CPUs; with the
    aggressive kills in place, there's very little to drift.
 
-Remaining noise floor on our EC2 VM is ~80 ms stdev at ~8.5 s baseline
-(~1% CV). The three dominant contributors are (in rough order):
+On the Ubuntu 22.04 EC2 VM, the remaining noise floor is ~80 ms stdev
+at ~8.5 s baseline (~1% CV). The three dominant contributors are (in
+rough order):
 
 - Cross-VM contention — a sibling tenant doing something bursty on the
   hypervisor. Can't fix this from inside the guest.
@@ -1477,8 +1537,9 @@ Remaining noise floor on our EC2 VM is ~80 ms stdev at ~8.5 s baseline
 
 §2's detection-floor numbers do not meaningfully change below 1% CV at
 the sample sizes we're practical about (n = 5-8 per JVM × 10-15
-iters). Moving to a dedicated bare-metal instance without Falcon is
-the next step if you need tighter noise.
+iters). We now address this by running primary campaigns on Ubuntu
+20.04 without Falcon kernel hooks (see below); keep the 22.04 numbers
+as fallback expectations.
 
 ### Bare-metal knobs (extras that only light up off-VM)
 
@@ -1532,8 +1593,8 @@ perfect NUMA pinning.
 **Conclusion.** For *wall-time* noise at our current scale (~10 s
 compiles), bare-metal with Falcon is not appreciably better than a
 well-tuned KVM guest. The win from bare-metal in the 2017 Scala
-setup came from a Falcon-free host. The cost/benefit of acquiring one
-for ourselves is discussed below.
+setup came from a Falcon-free host. We now have that setup available on
+Ubuntu 20.04 and use it as the default for benchmarking campaigns.
 
 ### Bare-metal, Ubuntu 20.04, no Falcon kernel hooks
 
@@ -1703,64 +1764,43 @@ and the Renaissance Suite measurement notes — all agree on 0.5–1.5%
 CV as the realistic range for a long-running JVM workload on tuned
 hardware. Our numbers sit exactly in the middle of that band.
 
-### Is it worth getting rid of Falcon?
+### Falcon-free benchmarking is now the default
 
-Options in increasing order of effort:
+We no longer treat "getting rid of Falcon" as a planning exercise: the
+Ubuntu 20.04 image without Falcon kernel hooks is available now and is
+our default environment for benchmarking.
 
-1. **Do nothing.** Stay at ~1% CV. Use `n = 8..16` per side, compute
-   medians, and call changes ≥ 1.5% solid. Good enough for any
-   change worth making by hand.
-2. **Add instruction-count as a secondary metric** (a few hours of
-   work). Our bench kernel already has `kernel.perf_event_paranoid =
-   -1`, so any user can read hardware counters without `sudo`. A
-   `perf stat -e instructions,cycles` wrapper around `CompilerBench`
-   plus a small sidecar output would give us a second, much tighter
-   number — typically 5-10× lower CV than wall time on the same
-   workload. This is what `rustc-perf` does.
-3. **Disable ASLR for bench runs** (trivial: `setarch -R` on `java`,
-   or `sysctl -w kernel.randomize_va_space=0` while bench-env is
-   `set`). Expected tightening: small on wall time, noticeable on
-   instruction count. Cost: negligible.
-4. **Custom EC2 without Arca/Falcon/Kolide.** Estimated 1-3
-   engineer-weeks to stand up plus ongoing maintenance, plus a
-   security-policy exception. Expected tightening: roughly 3× on
-   wall time (~1% → ~0.3%), matching the 2017 `scalabench` numbers.
-   Throughput would also jump 5-10%.
-5. **Physical dedicated benchmark box** off the corporate network.
-   Ideal for sustained benchmarking work (Scala team ran
-   `scalabench` this way for years). Expected tightening: same as
-   (4) plus lower day-to-day noise from shared-cabinet effects.
-   Highest cost.
+What this means in practice:
 
-**Recommendation for the current optimization round.**  Our recent
-campaign delivered ~3.3% total speedup across 16 commits, averaging
-~0.2% per commit.  Detecting a 0.2% change at 95% confidence with our
-best metric (`wall_total_ms` on a 20.04 spread campaign, CV 0.68%)
-needs `n ≈ 47` runs per side — about 2 hours per head-to-head with
-the current 6-iter measurement profile.  That's already practical for
-the hand-driven workflow.  The right ordering is:
+- Run benchmark campaigns on **Ubuntu 20.04** by default.
+- Keep using `bench-env.sh set` and report `wall_total_ms` as the primary
+  metric (lowest observed CV).
+- Keep the 22.04/Falcon data in this section as a fallback reference
+  when 20.04 capacity is unavailable.
 
-- Do (1) for routine work.  Stay on `wall_total_ms`, not per-iter
-  median (~30% lower CV for free).
-- When individual changes drop below 0.2% or we want to clear several
-  in a day, drop the warmup count (warmup contributes about 40% of
-  `wall_total`'s variance and is not what we're trying to measure)
-  and consider (3) — disabling ASLR is trivial and removes a known
-  per-JVM bias term.  We did *not* find counters (2) useful in
-  practice (see §10): for this JVM workload they tracked wall-time
-  poorly and added a substantial `perf stat` integration cost.
-- Path (4) — the dedicated Falcon-free image — would cut spread CV
-  another ~2× (from 0.68% to ~0.3%) based on the 20.04 vs 22.04 ratio
-  we measured, but is hard to justify against the 0.2% changes we are
-  actually shipping.  Reach for it only if compiler-performance work
-  becomes a sustained multi-quarter effort with a nightly regression
-  CI.
+Comparative findings (already measured above):
 
-Falcon specifically: the 20.04 experiment shows it costs us roughly
-1.6× on spread CV, with no meaningful adjacent-CV impact and no
-measurable wall-time impact.  The 5-10% wall-time tax we previously
-attributed to Falcon turned out to be overstated: it's <1% on this
-workload.  Removing Falcon is real but small.
+- **Spread-run variance improves materially on 20.04/no-Falcon**:
+  per-iter CV `1.59% -> 0.96%` (about `1.65x` tighter), with
+  `wall_total_ms` CV down to `0.68%`.
+- **Adjacent-run variance is similar** after outlier handling: roughly
+  ~1% CV on both images.
+- **Throughput impact is small**: no meaningful wall-time shift (well
+  below 1%) attributable to Falcon on this workload.
+
+Fallback caveats when you cannot use 20.04:
+
+- On 22.04/Falcon-enabled hosts, expect spread-run confidence to arrive
+  slower: matching a 20.04 spread CV of `0.96%` from a `1.59%` host
+  needs about `(1.59/0.96)^2 = 2.74x` more JVM runs.
+- Prefer longer interleaved A/B campaigns (`n=8..16`) and avoid drawing
+  conclusions from sub-1% single comparisons.
+- Keep the same environment controls (`bench-env.sh set`) so only the
+  Falcon/image delta remains.
+
+For today's workflow, this keeps routine optimization work practical:
+with 20.04's lower spread CV, we can resolve the same deltas with fewer
+runs and shorter wall-clock campaigns than on the older 22.04 setup.
 
 ## 12. Using the `scala/compiler-benchmark` project
 
