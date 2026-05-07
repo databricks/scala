@@ -1026,7 +1026,13 @@ private[internal] trait TypeMaps {
   class SubstSymMap(from0: List[Symbol], to0: List[Symbol]) extends SubstMap(from0, to0) {
     def this(pairs: (Symbol, Symbol)*) = this(pairs.toList.map(_._1), pairs.toList.map(_._2))
 
-    def init(from: List[Symbol], to: List[Symbol]): this.type = resetSubstMap(from, to)
+    // OPT skip the (cheap but non-trivial) `initSubstMap` work when the same
+    //     `(from, to)` pair is passed back-to-back -- e.g. when a pool slot is
+    //     re-used by consecutive calls with identical keys, or the
+    //     `substSymMapCache` 1-slot cache hits at the pool level.
+    def init(from: List[Symbol], to: List[Symbol]): this.type =
+      if ((substFrom eq from) && (substTo eq to)) this
+      else resetSubstMap(from, to)
 
     protected def toType(fromtp: Type, sym: Symbol) = fromtp match {
       case TypeRef(pre, _, args) => copyTypeRef(fromtp, pre, sym, args)

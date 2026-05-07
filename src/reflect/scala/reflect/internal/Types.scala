@@ -128,20 +128,50 @@ trait Types
    *  off the cached map because `SubstSymMap`'s ctor params aren't `val`.  Substitution
    *  is internally stateless (`SubstMap` is `trackVariance = false`), so reusing the
    *  same instance across a re-entry with the same `(from, to)` is safe.
+   *
+   *  OPT On miss while the cached map is currently in use (re-entrant call with a
+   *      different key pair), we route the substitution through the existing
+   *      `substSymMapPool` (originally added for `deriveSymbols`) so the second-level
+   *      maps come out of a re-usable stack rather than fresh allocations.  Together
+   *      with `SubstSymMap.init` skipping work when the keys are unchanged, this
+   *      eliminates ~550 MB / bench run of `SubstSymMap` allocations attributed to
+   *      `Type.substSym` (i.e. the cache-miss tail).
    */
   private object substSymMapCache {
     private[this] var cachedFrom: List[Symbol] = Nil
     private[this] var cachedTo: List[Symbol] = Nil
-    private[this] var cached: SubstSymMap = new SubstSymMap(Nil, Nil)
+    private[this] val cached: SubstSymMap = new SubstSymMap(Nil, Nil)
+    private[this] var depth: Int = 0
 
-    def apply(from: List[Symbol], to: List[Symbol]): SubstSymMap = if (isCompilerUniverse) {
-      if ((cachedFrom ne from) || (cachedTo ne to)) {
-        cached = new SubstSymMap(from, to)
-        cachedFrom = from
-        cachedTo = to
-      }
-      cached
-    } else new SubstSymMap(from, to)
+    /** Apply the `from -> to` substitution to `tp`.
+      *
+      *  - Cache hit (keys match the previous call): re-uses `cached` directly.
+      *  - Cache miss with the cached map free: re-initialises `cached` with the
+      *    new keys.
+      *  - Cache miss while `cached` is already in flight (re-entry with different
+      *    keys): borrows a `SubstSymMap` from `substSymMapPool` via
+      *    `acquireSubstSymMap`, init's it for this call, applies, releases.
+      */
+    def applyOn(from: List[Symbol], to: List[Symbol], tp: Type): Type =
+      if (isCompilerUniverse) {
+        if ((cachedFrom eq from) && (cachedTo eq to)) {
+          depth += 1
+          try cached.apply(tp)
+          finally depth -= 1
+        } else if (depth == 0) {
+          cached.init(from, to)
+          cachedFrom = from
+          cachedTo = to
+          depth = 1
+          try cached.apply(tp)
+          finally depth = 0
+        } else {
+          val m = acquireSubstSymMap()
+          m.init(from, to)
+          try m.apply(tp)
+          finally releaseSubstSymMap()
+        }
+      } else new SubstSymMap(from, to).apply(tp)
   }
 
   /** The current skolemization level, needed for the algorithms
@@ -797,9 +827,12 @@ trait Types
     //     reuse a single `SubstSymMap` rather than allocating a fresh one each time.
     //     Mirrors the `subst` cache; allocation profiles showed `Type.substSym` as the
     //     dominant `SubstSymMap` allocator (~1 GB / run on the bench corpus).
+    //     The cache also routes cache-miss-while-in-use through the pool, so the
+    //     remaining ~550 MB / run of `SubstSymMap` allocations from cache misses
+    //     are eliminated too.
     def substSym(from: List[Symbol], to: List[Symbol]): Type =
       if ((from eq to) || (from eq Nil)) this
-      else substSymMapCache(from, to) apply this
+      else substSymMapCache.applyOn(from, to, this)
 
     /** Substitute all occurrences of `ThisType(from)` in this type by `to`.
      *
