@@ -1167,6 +1167,78 @@ Round-3 highlights, methodology-wise:
 - MiMa + JUnit + partest: re-run on round-3 HEAD; all categories that
   were green on round-2 HEAD remain green. Test details added to §3.
 
+### 10.3.1 Round 4 — 2026-05 (small-scale follow-up)
+
+After round 3, a short follow-up session re-profiled HEAD and tried a
+handful of further candidates from the `parse-jfr-alloc.py` /
+`parse-jfr.py` tables. The noise-floor lessons from round 3 were
+re-confirmed: most candidates that looked like wins on a single 5×3×10
+A/B did not survive an 8×3×12 or 8×3×15 follow-up, even when their JFR
+allocation reduction was real and reproducible.
+
+#### Tested + reverted (within-noise wall, kept the simpler source)
+
+| Direction | Why reverted |
+| --- | --- |
+| Pool the per-call `SubstTypeMap` in `Type.subst` (mirroring round-3's `AsSeenFromMap` pool) | Wall neutral on cumulative re-measure, after isolated A/B suggested a small win; the cache slot's runtime overhead offset the allocation savings. |
+| `Typers.silent` reuse `this` typer instead of allocating `NormalTyper` + `Inferencer` | Compile error in the standard library (`OpenHashMap.scala:size += 1`), traced to a closure escaping the `silent` block and observing the non-mutated `this.context` when re-evaluated. |
+| `mergePrefixAndArgs` `List.distinct` reference-identity fast-path | +1.07% median on 5×3×10 A/B; reverted. |
+| `Erasure.boundsSig` two-pass `while` instead of `partition` | Bundled with the `mergePrefixAndArgs` regression; reverted together. |
+| `SymbolPairs.Cursor.next` recursive-to-iterative rewrite | +0.82% median on 5×3×10 A/B even though it eliminated the single hottest CPU edge by sample count. The JIT was already collapsing the tail-recursion better than the explicit loop. |
+| `Contexts.importedAccessibleSymbol` / `SymbolLookup.searchPrefix` non-overloaded fast-path (mirrors the kept `Infer.checkAccessible` change) | Wall neutral and slightly increased CV; reverted to keep the access-check call sites simple. |
+| `TypingTransformer.atOwner` switch from 2-arg `make` to 3-arg `make` (to enable the `(tree, owner, scope)` fast-path) | Wall flat (-0.27% median, +0.02% wall_total), JFR sampling noise the only signal — reverted. |
+
+#### Kept (committed)
+
+`OPT: Typers.addSynthetics + Infer.checkAccessible - drop hot-path lambdas`
+(commit `3b220e3c91`):
+
+- `Typers.addSynthetics`: bail out before iterating `scope.toList` when
+  `context.unit.synthetics.isEmpty` (the common case), and rewrite the
+  inner `for (sym <- scope) for (tree <- ...) if shouldAdd(sym)`
+  comprehension as an allocation-free `while` over `scope.toList` using
+  a new `synthetics.getOrNull` accessor (analogous to the existing
+  round-2 `synthetics.get`). Eliminates the two captured lambdas
+  (`Typer$$Lambda$902` / `Lambda$903`) and the transient `Option` per
+  scope element.
+- `Infer.checkAccessible`: avoid the `alt => context.isAccessible(alt,
+  pre, isSuper)` lambda inside `Symbol.filter` for the
+  (overwhelmingly common) non-overloaded case, where `Symbol.filter`
+  reduces to `if (cond(this)) this else NoSymbol`. The overloaded
+  branch keeps the original filter-based path so the
+  `newOverloaded`-rebundling logic is untouched.
+
+JFR allocation impact:
+
+- `Typer$$Lambda` from `$anonfun$typedStats$4`: ~ -253 MB / bench run.
+- `Inferencer.accessible$1` lambda: ~ -115 MB / bench run.
+
+Wall-time deltas across `compare.sh 8 3 12` and `compare.sh 8 3 15`
+runs sit at -0.1% to -0.8%, near the bench's noise floor (~+/-1.7%
+median, +/-0.4% `wall_total`). All three metrics are consistently
+negative, and optimised stdev is consistently lower than baseline.
+Bytecode identity verified; JUnit `junit/test` (1866 tests) green.
+
+#### Methodology notes specific to round 4
+
+- **Lambda renumbering across builds.** `parse-jfr-alloc.py` reports
+  classes like `Typers$Typer$$Lambda$902`, but the numeric suffix is
+  assigned by the JIT/InvokeDynamic machinery and changes between
+  builds. Don't compare lambda allocations across runs by class name
+  alone; either resolve them through `find-jfr-alloc-callers.py` to
+  the owning source frame, or compare top-level totals (e.g. all
+  `Typers$Typer$$Lambda*` together).
+- **A no-op A/B (clean vs clean) measures the real noise floor.**
+  When `prev-pack` and `build/pack` are byte-identical, the 5-run
+  median delta is around +0.4..+1.7%, the wall_measured delta around
+  +/-0.9%, and wall_total around +/-0.4%. Use these as the
+  must-clear thresholds before declaring a within-noise change a win.
+- **Stdev as a secondary signal.** Several "neutral wall" changes
+  consistently lowered run-to-run stdev (e.g. `wall_total` stdev fell
+  from ~1500 ms to ~900 ms with the addSynthetics rewrite). When the
+  median is at noise but stdev shrinks, it's weak evidence of a real
+  CPU-time reduction that the median sampler isn't catching.
+
 ### 10.4 Future directions
 
 After round 3 the remaining allocation profile is dominated by inherent
