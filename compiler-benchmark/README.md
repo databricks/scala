@@ -1187,6 +1187,7 @@ allocation reduction was real and reproducible.
 | `SymbolPairs.Cursor.next` recursive-to-iterative rewrite | +0.82% median on 5×3×10 A/B even though it eliminated the single hottest CPU edge by sample count. The JIT was already collapsing the tail-recursion better than the explicit loop. |
 | `Contexts.importedAccessibleSymbol` / `SymbolLookup.searchPrefix` non-overloaded fast-path (mirrors the kept `Infer.checkAccessible` change) | Wall neutral and slightly increased CV; reverted to keep the access-check call sites simple. |
 | `TypingTransformer.atOwner` switch from 2-arg `make` to 3-arg `make` (to enable the `(tree, owner, scope)` fast-path) | Wall flat (-0.27% median, +0.02% wall_total), JFR sampling noise the only signal — reverted. |
+| `Contexts.lookupSymbol` use the new `ReusableInstance.acquire` / `release` instead of the SAM-based `using` (mirrors the kept `Type.findMember` change) | JFR cleanly removed the ~70 MB `_(this, name)(qualifies)` lambda, but the wall delta on a follow-up `compare.sh 8 3 12` was noise (-0.29% wall_measured, +0.33% median, ±0.00% wall_total). Reverted to keep the lookup site as a single line. |
 
 #### Kept (committed)
 
@@ -1218,6 +1219,48 @@ runs sit at -0.1% to -0.8%, near the bench's noise floor (~+/-1.7%
 median, +/-0.4% `wall_total`). All three metrics are consistently
 negative, and optimised stdev is consistently lower than baseline.
 Bytecode identity verified; JUnit `junit/test` (1866 tests) green.
+
+`OPT: Type.findMember - drop the ReusableInstance.using lambda`
+(commit `de75a4d03e`):
+
+- Adds an `acquire` / `release` non-functional API to
+  `scala.reflect.internal.util.ReusableInstance` (the existing `using`
+  API stays, this is purely additive — MiMa-clean).  `acquire` returns
+  the cached instance and marks the slot taken, or returns a fresh
+  `make()` instance on re-entrant / disabled paths.  `release` is a
+  no-op when handed a fresh instance.
+- Rewrites `Type.findMember`'s `findMemberInternal` to use the explicit
+  `acquire / try / finally / release` pair instead of
+  `findMemberInstance.using { findMember => ... }`.  The original
+  `using` form created a new SAM `(FindMember => Symbol)` lambda on
+  every call (~ 150 MB / bench run, attributed to
+  `Types$Type$$Lambda` with top frame `findMemberInternal$1` /
+  `Type.findMember`), which the JIT was not eliding through escape
+  analysis on this workload.
+
+JFR allocation impact:
+
+- `Types$Type$$Lambda` from `findMember`: ~ -150 MB / bench run.
+- Total `DirectMethodHandle.allocateInstance` weight on the bench
+  corpus: 1936.6 MB → 1787.4 MB (-7.7%).
+
+Wall-time deltas (`compare.sh 8 3 12`):
+
+- median per-iter:  -38.5 ms / -0.42%
+- wall_measured:   -271.0 ms / -0.25%
+- wall_total:      -576.0 ms / -0.36%
+
+All three metrics are negative but at the noise floor; the JFR
+allocation reduction is the primary signal.  Bytecode identity
+verified; JUnit `junit/test` (1866 tests) green; MiMa
+`library/mimaReportBinaryIssues` + `reflect/mimaReportBinaryIssues`
+clean.
+
+The new `acquire`/`release` API is intentionally minimal so that other
+hot `using` call sites can follow if/when they show up in JFR.  We
+**did** try the same rewrite at `Contexts.lookupSymbol`, the obvious
+sibling — see the table above for why it was reverted (allocation win
+real, wall flat).
 
 #### Methodology notes specific to round 4
 
