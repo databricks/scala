@@ -29,6 +29,21 @@ final class ReusableInstance[T <: AnyRef](make: () => T, enabled: Boolean) {
       taken = true
       action(cached)
     } finally taken = false
+
+  // OPT non-functional acquire/release pair.  `using` allocates a SAM
+  //     instance for `action` on every call, which shows up in the JFR
+  //     allocation profile (e.g. ~150 MB / bench run for `Type.findMember`).
+  //     Hot call sites can use the explicit pair instead:
+  //         val t = ri.acquire()
+  //         try { ... } finally ri.release(t)
+  //     `release` is a no-op when `t` is a re-entrant fresh instance,
+  //     since in that case the cache slot was never marked taken.
+  def acquire(): T =
+    if (!enabled || taken) make()
+    else { taken = true; cached }
+
+  def release(t: T): Unit =
+    if (t eq cached) taken = false
 }
 
 object ReusableInstance {

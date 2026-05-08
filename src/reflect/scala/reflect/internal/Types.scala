@@ -1117,9 +1117,17 @@ trait Types
      *  @param stableOnly     If set, return only members that are types or stable values
      */
     def findMember(name: Name, excludedFlags: Long, requiredFlags: Long, stableOnly: Boolean): Symbol = {
-      def findMemberInternal = findMemberInstance.using { findMember =>
-        findMember.init(this, name, excludedFlags, requiredFlags, stableOnly)
-        findMember()
+      // OPT inline `findMemberInstance.using { ... }` to drop the SAM
+      //     allocation it would otherwise incur on every `findMember` call.
+      //     `findMember` is on a *very* hot path (`Type.member`,
+      //     `memberType`, `lookupMember`, ...), and the lambda was a
+      //     ~150 MB / bench run allocator before this rewrite.
+      def findMemberInternal: Symbol = {
+        val findMember = findMemberInstance.acquire()
+        try {
+          findMember.init(this, name, excludedFlags, requiredFlags, stableOnly)
+          findMember()
+        } finally findMemberInstance.release(findMember)
       }
 
       if (this.isGround) findMemberInternal
