@@ -3298,29 +3298,44 @@ trait Typers extends Adaptations with Tags with TypersTracking with PatternTyper
         var moreToAdd = true
         while (moreToAdd) {
           val initElems = scope.elems
-          // scala/bug#5877 The decls of a package include decls of the package object. But we don't want to add
-          //         the corresponding synthetics to the package class, only to the package object class.
-          // scala/bug#6734 Locality test below is meaningless if we're not even in the correct tree.
-          //         For modules that are synthetic case companions, check that case class is defined here.
-          // scala/bug#10783 ditto for synthetic companions of derived value classes.
-          def shouldAdd(sym: Symbol): Boolean = {
-            def classDefinedHere(s: Symbol): Boolean = stats exists {
-              case t: ClassDef => t.symbol eq s
-              case _           => false
-            }
-            def shouldAddAsModule: Boolean =
-              classDefinedHere(companionSymbolOf(sym, context))
+          // OPT bail out before iterating the scope when there are no synthetics
+          //     waiting (the common case).  `addSynthetics` is called for every
+          //     `Block`/`Template`, but the map is populated only by Namers for
+          //     case-class companions, default-arg getters, etc.
+          if (!context.unit.synthetics.isEmpty) {
+            // scala/bug#5877 The decls of a package include decls of the package object. But we don't want to add
+            //         the corresponding synthetics to the package class, only to the package object class.
+            // scala/bug#6734 Locality test below is meaningless if we're not even in the correct tree.
+            //         For modules that are synthetic case companions, check that case class is defined here.
+            // scala/bug#10783 ditto for synthetic companions of derived value classes.
+            def shouldAdd(sym: Symbol): Boolean = {
+              def classDefinedHere(s: Symbol): Boolean = stats exists {
+                case t: ClassDef => t.symbol eq s
+                case _           => false
+              }
+              def shouldAddAsModule: Boolean =
+                classDefinedHere(companionSymbolOf(sym, context))
 
-            (!sym.isModule || shouldAddAsModule) && (inBlock || !context.isInPackageObject(sym, context.owner))
-          }
-          for (sym <- scope)
-            // OPT: shouldAdd is usually true. Call it here, rather than in the outer loop
-            for (tree <- context.unit.synthetics.get(sym) if shouldAdd(sym)) {
-              // if the completer set the IS_ERROR flag, retract the stat (currently only used by applyUnapplyMethodCompleter)
-              if (!sym.initialize.hasFlag(IS_ERROR))
-                newStats += typedStat(tree) // might add even more synthetics to the scope
-              context.unit.synthetics -= sym
+              (!sym.isModule || shouldAddAsModule) && (inBlock || !context.isInPackageObject(sym, context.owner))
             }
+            // OPT iterative form of the original `for (sym <- scope) for (tree <- ...) { body }`
+            //     comprehension.  The for-comprehension allocates two captured lambdas
+            //     (and a transient `Option` per scope-element) on every call; this loop
+            //     avoids both by using `synthetics.getOrNull`.
+            //     `shouldAdd` is usually true, so we still call it inside the lookup
+            //     guard rather than in the outer loop.
+            var syms = scope.toList
+            while (syms ne Nil) {
+              val sym = syms.head
+              val tree = context.unit.synthetics.getOrNull(sym)
+              if ((tree ne null) && shouldAdd(sym)) {
+                if (!sym.initialize.hasFlag(IS_ERROR))
+                  newStats += typedStat(tree)
+                context.unit.synthetics -= sym
+              }
+              syms = syms.tail
+            }
+          }
           // the type completer of a synthetic might add more synthetics. example: if the
           // factory method of a case class (i.e. the constructor) has a default.
           moreToAdd = scope.elems ne initElems

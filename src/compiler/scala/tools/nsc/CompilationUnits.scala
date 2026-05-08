@@ -129,6 +129,16 @@ trait CompilationUnits { global: Global =>
           debuglog(s"found synthetic for $sym in $self: ${result.get}")
         result
       }
+      // OPT allocation-free variant of `get`.  `Typers.addSynthetics` iterates
+      //     every member symbol of a scope and calls this for each, but the
+      //     map is empty in the vast majority of cases, so an `Option` per
+      //     lookup adds up.
+      def getOrNull(sym: Symbol): Tree = {
+        val r = map.getOrNull(sym)
+        if (r ne null) debuglog(s"found synthetic for $sym in $self: $r")
+        r
+      }
+      def isEmpty: Boolean = map.isEmpty
       def keys: Iterable[Symbol] = map.keys
       def clear(): Unit = map.clear()
       override def toString = map.toString

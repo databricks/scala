@@ -264,9 +264,20 @@ trait Infer extends Checkable {
         ErrorUtils.issueTypeError(error)(context)
         ErrorType
       }
-      def accessible = sym filter (alt => context.isAccessible(alt, pre, site.isInstanceOf[Super])) match {
-        case NoSymbol if sym.isJavaDefined && context.unit.isJava => sym  // don't try to second guess Java; see #4402
-        case sym1                                                 => sym1
+      // OPT avoid the `alt => context.isAccessible(alt, pre, isSuper)` lambda
+      //     in `Symbol.filter` for the (overwhelmingly common) non-overloaded
+      //     case.  `accessible$1` was a top-3 lambda allocator before this
+      //     fast-path.  When `sym` is overloaded, fall through to the original
+      //     filter-based path so the alternatives-walking logic (and result
+      //     re-overloading via `newOverloaded`) is preserved unchanged.
+      val isSuper = site.isInstanceOf[Super]
+      def accessible: Symbol = {
+        val filtered: Symbol =
+          if (sym.isOverloaded) sym filter (alt => context.isAccessible(alt, pre, isSuper))
+          else if (context.isAccessible(sym, pre, isSuper)) sym
+          else NoSymbol
+        if ((filtered eq NoSymbol) && sym.isJavaDefined && context.unit.isJava) sym  // don't try to second guess Java; see #4402
+        else filtered
       }
       if (context.unit.exists && settings.YtrackDependencies.value)
         context.unit.registerDependency(sym.enclosingTopLevelClass)
