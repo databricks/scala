@@ -213,8 +213,10 @@ abstract class Erasure extends InfoTransform
    */
 
   final def javaSig(sym0: Symbol, info: Type, markClassUsed: Symbol => Unit): Option[String] = enteringErasure { javaSig0(sym0, info, markClassUsed) }
+  /** Public for compiler plugins: a plugin that already has the pre-erasure info calls this at its own
+   *  phase. `javaSig` always travels to erasure, and that runs the info transformers of the phases in between. */
   @noinline
-  private final def javaSig0(sym0: Symbol, info: Type, markClassUsed: Symbol => Unit): Option[String] = {
+  final def javaSig0(sym0: Symbol, info: Type, markClassUsed: Symbol => Unit): Option[String] = {
     val builder = new java.lang.StringBuilder(64)
     val isTraitSignature = sym0.enclClass.isTrait
 
