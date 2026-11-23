@@ -2,7 +2,7 @@
 
 set -eo pipefail
 
-PATCHLEVEL="6"
+PATCHLEVEL="7"
 
 TEMP_REPO=$(mktemp -d)
 sbt generateBuildCharacterPropertiesFile
